@@ -2765,7 +2765,7 @@ def _gen_extract_label_time_course_AP(stcs, labels, src, mode='mean',
 
         # extract label time series for the vol src space
         if len(src) > 2:
-            v1 = nvert[0]+nvert[1]
+            v1 = nvert[0] + nvert[1]
             for i, nv in enumerate(nvert[2:]):
                 print i
                 print nv

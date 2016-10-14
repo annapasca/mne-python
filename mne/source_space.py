@@ -45,6 +45,7 @@ def _get_lut():
              ('R', '<i8'), ('G', '<i8'), ('B', '<i8'), ('A', '<i8')]
     return np.genfromtxt(lut_fname, dtype=dtype)
 
+
 def _get_lut_AP():
     """Helper to get the FreeSurfer LUT"""
     data_dir = op.join(op.dirname(__file__), 'data')
@@ -52,6 +53,7 @@ def _get_lut_AP():
     return np.genfromtxt(lut_fname, dtype=None,
                          usecols=(0, 1, 2, 3, 4, 5),
                          names=['id', 'name', 'R', 'G', 'B', 'A'])
+
 
 def _get_lut_id(lut, label, use_lut):
     """Convert a label to a LUT ID number."""
