@@ -46,15 +46,6 @@ def _get_lut():
     return np.genfromtxt(lut_fname, dtype=dtype)
 
 
-def _get_lut_AP():
-    """Helper to get the FreeSurfer LUT"""
-    data_dir = op.join(op.dirname(__file__), 'data')
-    lut_fname = op.join(data_dir, 'FreeSurferColorLUT.txt')
-    return np.genfromtxt(lut_fname, dtype=None,
-                         usecols=(0, 1, 2, 3, 4, 5),
-                         names=['id', 'name', 'R', 'G', 'B', 'A'])
-
-
 def _get_lut_id(lut, label, use_lut):
     """Convert a label to a LUT ID number."""
     if not use_lut:
@@ -2576,110 +2567,6 @@ def get_volume_labels_from_src(src, subject, subjects_dir):
         label = Label(vertices=vertices, pos=pos, hemi=hemi,
                       name=roi_str, color=color,
                       subject=subject)
-        labels_aseg.append(label)
-
-    return labels_aseg
-
-
-def get_volume_labels_from_aseg_AP(mgz_fname):
-    """Returns a list of names and colors of segmented volumes.
-
-    Parameters
-    ----------
-    mgz_fname : str
-        Filename to read. Typically aseg.mgz or some variant in the freesurfer
-        pipeline.
-
-    Returns
-    -------
-    label_names_sorted : list of str
-        The names of segmented volumes included in this mgz file.
-    label_colors_sorted : list of str
-        The RGB colors of the labels included in this mgz file.
-    Notes
-    -----
-    .. versionadded:: 0.9.0
-    """
-    import nibabel as nib
-    import pandas as pd
-
-    # Read the mgz file using nibabel
-    mgz_data = nib.load(mgz_fname).get_data()
-
-    # Get the unique label names
-    lut = _get_lut_AP()
-
-    label_names = [lut[lut['id'] == ii]['name'][0].decode('utf-8')
-                   for ii in np.unique(mgz_data)]
-    label_colors = [[lut[lut['id'] == ii]['R'][0],
-                     lut[lut['id'] == ii]['G'][0],
-                     lut[lut['id'] == ii]['B'][0],
-                     lut[lut['id'] == ii]['A'][0]]
-                    for ii in np.unique(mgz_data)]
-    label_names_sorted = sorted(label_names, key=lambda n: n.lower())
-
-    p = pd.DataFrame({'label_names': label_names,
-                     'label_colors': label_colors}).sort('label_names')
-
-    label_names_sorted = list(p['label_names'])
-    labels_colors_sorted = list(p['label_colors'])
-
-    return label_names_sorted, labels_colors_sorted
-
-
-def get_volume_labels_from_src(src, sbj_dir, sbj_id):
-    """Returns a list of Label of segmented volumes included in the src space.
-
-    Parameters
-    ----------
-    src : instance of SourceSpaces
-        The source space containing the volume regions
-    sbj_dir: str
-        Freesurfer folder of the subjects
-    sbj_id: str
-        Subject name
-
-    Returns
-    -------
-    labels_aseg : list of Label
-        List of Label of segmented volumes included in src space.
-
-    """
-    import os.path as op
-    import numpy as np
-
-    from mne import Label
-    from mne import get_volume_labels_from_aseg_AP
-
-    # Read the aseg file
-    aseg_fname = op.join(sbj_dir, sbj_id, 'mri/aseg.mgz')
-    all_labels_aseg = get_volume_labels_from_aseg_AP(aseg_fname)
-
-    # Create a list of Label
-    labels_aseg = list()
-    for nr in range(2, len(src)):
-        vertices = src[nr]['vertno']
-
-        pos = src[nr]['rr'][src[nr]['vertno'], :]
-        roi_str = src[nr]['seg_name']
-        try:
-            ind = all_labels_aseg[0].index(roi_str)
-            color = np.array(all_labels_aseg[1][ind]) / 255
-        except ValueError:
-            pass
-
-        if 'left' in roi_str.lower():
-            hemi = 'lh'
-            roi_str = roi_str.replace('Left-', '') + '-lh'
-        elif 'right' in roi_str.lower():
-            hemi = 'rh'
-            roi_str = roi_str.replace('Right-', '') + '-rh'
-        else:
-            hemi = 'both'
-
-        label = Label(vertices=vertices, pos=pos, hemi=hemi,
-                      name=roi_str, color=color,
-                      subject=sbj_id)
         labels_aseg.append(label)
 
     return labels_aseg
