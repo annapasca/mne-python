@@ -151,6 +151,26 @@ def test_source_psd_ori():
 
 
 @testing.requires_testing_data
+def test_source_psd_ori():
+    """Test source PSD computation in src space."""
+    raw = read_raw_fif(fname_data)
+    inverse_operator = read_inverse_operator(fname_inv)
+    tmin, tmax = 0, 20  # seconds
+    fmin, fmax = 55, 65  # Hz
+    n_fft = 2048
+    pick_ori = None
+
+    assert_true(inverse_operator['source_ori'] == FIFF.FIFFV_MNE_FREE_ORI)
+
+    stc = compute_source_psd(raw, inverse_operator, lambda2=1. / 9.,
+                             method="dSPM", tmin=tmin, tmax=tmax,
+                             fmin=fmin, fmax=fmax, pick_ori=pick_ori,
+                             n_fft=n_fft, overlap=0.1)
+
+    assert_true(stc.shape[0] == inverse_operator['nsource'])
+
+
+@testing.requires_testing_data
 def test_source_psd_epochs():
     """Test multi-taper source PSD computation in label from epochs."""
     raw = read_raw_fif(fname_data)
