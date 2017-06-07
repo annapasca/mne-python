@@ -1160,6 +1160,8 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
     if pick_ori == 'vector' and noise_norm is not None:
         noise_norm = noise_norm.repeat(3, axis=0)
 
+    is_mixed = (inverse_operator['source_ori'] == 5 and pick_ori is None)
+
     if not is_free_ori and noise_norm is not None:
         # premultiply kernel with noise normalization
         K *= noise_norm
@@ -1177,6 +1179,28 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
 
             if noise_norm is not None:
                 sol *= noise_norm
+
+        elif is_mixed:
+
+            print('************* K dim {}  ************* \n'.format(K.shape))
+
+            inv_src = inverse_operator['src']
+
+            vertno = [s['vertno'] for s in inv_src]
+            nvert = [len(vn) for vn in vertno]
+
+            n_source_cortex = np.sum(nvert[:2])
+            n_source_aseg = np.sum(nvert[2:])
+
+            sol_cortex = np.dot(K[:n_source_cortex, :], e[sel])
+            print('**** sol_cortex dim {}  **** \n'.format(sol_cortex.shape))
+
+            sol_aseg = np.dot(K[n_source_cortex:, :], e[sel])
+            print('*** sol_aseg dim {}  *** \n'.format(sol_aseg.shape))
+            sol_aseg = combine_xyz(sol_aseg)
+
+            sol = np.concatenate((sol_cortex, sol_aseg), axis=0)
+
         else:
             # Linear inverse: do computation here or delayed
             if len(sel) < K.shape[1]:
@@ -1352,8 +1376,8 @@ def _prepare_forward(forward, info, noise_cov, pca=False, rank=None,
 
 @verbose
 def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
-                          fixed='auto', limit_depth_chs=True, rank=None,
-                          use_cps=True, verbose=None):
+                          fixed='auto', is_mixed=False, limit_depth_chs=True,
+                          rank=None, use_cps=True, verbose=None):
     """Assemble inverse operator.
 
     Parameters
@@ -1473,6 +1497,13 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                 'For a fixed orientation inverse solution with depth '
                 'weighting, the forward solution must be free-orientation and '
                 'in surface orientation')
+        if is_mixed:
+            raise ValueError('For a fixed orientation inverse solution '
+                             'is_mixed has to be False')
+
+    if is_mixed:
+        depth = None
+        loose = None
 
     # depth=None can use fixed fwd, depth=0<x<1 must use free ori
     if depth is not None:
@@ -1489,6 +1520,7 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
         logger.info('Forward is not surface oriented, converting.')
         forward = convert_forward_solution(forward, surf_ori=True,
                                            use_cps=use_cps)
+
 
     #
     # 1. Read the bad channels
@@ -1547,7 +1579,7 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                        projs=[])
 
     # apply loose orientations
-    if not is_fixed_ori:
+    if not is_fixed_ori and not is_mixed:
         orient_prior = compute_orient_prior(forward, loose=loose)
         source_cov *= orient_prior
         orient_prior = dict(data=orient_prior,
