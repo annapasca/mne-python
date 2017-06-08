@@ -1193,10 +1193,12 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
             n_source_aseg = np.sum(nvert[2:])
 
             sol_cortex = np.dot(K[:n_source_cortex, :], e[sel])
+            sol_cortex = np.abs(sol_cortex)
             print('**** sol_cortex dim {}  **** \n'.format(sol_cortex.shape))
 
             sol_aseg = np.dot(K[n_source_cortex:, :], e[sel])
             print('*** sol_aseg dim {}  *** \n'.format(sol_aseg.shape))
+
             sol_aseg = combine_xyz(sol_aseg)
 
             sol = np.concatenate((sol_cortex, sol_aseg), axis=0)
