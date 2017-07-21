@@ -591,6 +591,8 @@ def convert_forward_solution(fwd, surf_ori=False, force_fixed=False,
     fwd : Forward
         The modified forward solution.
     """
+
+    print('\n *** is mixed = {} *** \n'.format(is_mixed))
     fwd = fwd.copy() if copy else fwd
 
     if force_fixed is True:
