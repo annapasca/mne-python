@@ -75,9 +75,9 @@ def _mhdch_2_chs(mhd_ch):
     
    # Magnetic channel
     if mhd_ch['type'] == ITAB.ITABV_MAG_CH:
-        loc[0:12]= (mhd_ch['pos'][0]['posx'],  #r0
-                mhd_ch['pos'][0]['posy'],  
-                mhd_ch['pos'][0]['posz'],
+        loc[0:12]= (mhd_ch['pos'][0]['posx']/1000,  #r0
+                mhd_ch['pos'][0]['posy']/1000,  
+                mhd_ch['pos'][0]['posz']/1000,
                 mhd_ch['pos'][0]['orix'],  #ex
                 0,
                 0,
@@ -193,36 +193,36 @@ def _mhd2info(mhd):
     point_info['coord_frame'] = FIFF.FIFFV_COORD_HEAD   
     point_info['kind']  = FIFF.FIFFV_POINT_CARDINAL
     point_info['ident'] = FIFF.FIFFV_POINT_NASION 
-    point_info['r'] = ( mhd['marker'][0]['posx'],
-                        mhd['marker'][0]['posy'],
-                        mhd['marker'][0]['posz'] )
+    point_info['r'] = ( mhd['marker'][0]['posx']/1000,
+                        mhd['marker'][0]['posy']/1000,
+                        mhd['marker'][0]['posz']/1000)
     dig += [point_info]
 # Right pre-auricolar  
     point_info = dict()
     point_info['coord_frame'] = FIFF.FIFFV_COORD_HEAD   
     point_info['kind']  = FIFF.FIFFV_POINT_CARDINAL
     point_info['ident'] = FIFF.FIFFV_POINT_RPA 
-    point_info['r'] = ( mhd['marker'][1]['posx'],
-                        mhd['marker'][1]['posy'],
-                        mhd['marker'][1]['posz'] )
+    point_info['r'] = ( mhd['marker'][1]['posx']/1000,
+                        mhd['marker'][1]['posy']/1000,
+                        mhd['marker'][1]['posz']/1000 )
     dig += [point_info]
 # Left pre-auricolar  
     point_info = dict()
     point_info['coord_frame'] = FIFF.FIFFV_COORD_HEAD   
     point_info['kind']  = FIFF.FIFFV_POINT_CARDINAL
     point_info['ident'] = FIFF.FIFFV_POINT_LPA 
-    point_info['r'] = ( mhd['marker'][2]['posx'],
-                        mhd['marker'][2]['posy'],
-                        mhd['marker'][2]['posz'] )
+    point_info['r'] = ( mhd['marker'][2]['posx']/1000,
+                        mhd['marker'][2]['posy']/1000,
+                        mhd['marker'][2]['posz']/1000)
     dig += [point_info]
 # Vertex  
     point_info = dict()
     point_info['coord_frame'] = FIFF.FIFFV_COORD_HEAD   
     point_info['kind']  = FIFF.FIFFV_POINT_EXTRA
     point_info['ident'] = 4 
-    point_info['r'] = ( mhd['marker'][3]['posx'],
-                        mhd['marker'][3]['posy'],
-                        mhd['marker'][3]['posz'] )
+    point_info['r'] = ( mhd['marker'][3]['posx']/1000,
+                        mhd['marker'][3]['posy']/1000,
+                        mhd['marker'][3]['posz']/1000)
     dig += [point_info]
 # HPI coils
     for k in range(4, mhd['num_markers']):   
@@ -230,9 +230,9 @@ def _mhd2info(mhd):
         point_info['coord_frame'] = FIFF.FIFFV_COORD_HEAD   
         point_info['kind']  = FIFF.FIFFV_POINT_HPI
         point_info['ident'] = k+1 
-        point_info['r'] = ( mhd['marker'][k]['posx'],
-                            mhd['marker'][k]['posy'],
-                            mhd['marker'][k]['posz'] )
+        point_info['r'] = ( mhd['marker'][k]['posx']/1000,
+                            mhd['marker'][k]['posy']/1000,
+                            mhd['marker'][k]['posz']/1000)
         dig += [point_info]
 # TDB other poosible head points, check on dig points.      
       
