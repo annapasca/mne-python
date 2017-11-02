@@ -69,7 +69,7 @@ def _mhdch_2_chs(mhd_ch):
     ch['loc'] = loc
     ch['scanno'] = None
     ch['kind'] = FIFF.FIFFV_MISC_CH
-    ch['logno']  = None
+    ch['logno']  = 0  # TODO is it right?
 
     nmeg = neeg = nref = 0
     
