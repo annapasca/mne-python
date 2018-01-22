@@ -160,8 +160,9 @@ def dpss_windows(N, half_nbw, Kmax, low_bias=True, interp_from=None,
         d, e = dpss_windows(interp_from, half_nbw, Kmax, low_bias=False)
         for this_d in d:
             x = np.arange(this_d.shape[-1])
-            I = interpolate.interp1d(x, this_d, kind=interp_kind)
-            d_temp = I(np.linspace(0, this_d.shape[-1] - 1, N, endpoint=False))
+            tmp = interpolate.interp1d(x, this_d, kind=interp_kind)
+            d_temp = tmp(np.linspace(0, this_d.shape[-1] - 1, N,
+                                     endpoint=False))
 
             # Rescale:
             d_temp = d_temp / np.sqrt(sum_squared(d_temp))
@@ -562,7 +563,7 @@ def psd_array_multitaper(x, sfreq, fmin=0, fmax=np.inf, bandwidth=None,
 def tfr_array_multitaper(epoch_data, sfreq, freqs, n_cycles=7.0,
                          zero_mean=True, time_bandwidth=None, use_fft=True,
                          decim=1, output='complex', n_jobs=1,
-                         frequencies=None, verbose=None):
+                         verbose=None):
     """Compute time-frequency transforms using wavelets and multitaper windows.
 
     Uses Morlet wavelets windowed with multiple DPSS tapers.
@@ -639,5 +640,4 @@ def tfr_array_multitaper(epoch_data, sfreq, freqs, n_cycles=7.0,
                         method='multitaper', n_cycles=n_cycles,
                         zero_mean=zero_mean, time_bandwidth=time_bandwidth,
                         use_fft=use_fft, decim=decim, output=output,
-                        n_jobs=n_jobs, frequencies=frequencies,
-                        verbose=verbose)
+                        n_jobs=n_jobs, verbose=verbose)

@@ -21,7 +21,7 @@ from .io.write import (start_block, end_block, write_int,
                        write_float_sparse_rcs, write_string,
                        write_float_matrix, write_int_matrix,
                        write_coord_trans, start_file, end_file, write_id)
-from .bem import read_bem_surfaces
+from .bem import read_bem_surfaces, ConductorModel
 from .surface import (read_surface, _create_surf_spacing, _get_ico_surface,
                       _tessellate_sphere_surf, _get_surf_neighbors,
                       _normalize_vectors, _get_solids, _triangle_neighbors,
@@ -768,7 +768,7 @@ def _read_one_source_space(fid, this, verbose=None):
     if tag is None:
         raise ValueError('Vertex normals not found')
 
-    res['nn'] = tag.data
+    res['nn'] = tag.data.copy()
     if res['nn'].shape[0] != res['np']:
         raise ValueError('Vertex normal information is incorrect')
 
@@ -1503,10 +1503,11 @@ def setup_volume_source_space(subject=None, pos=5.0, mri=None,
         interpolation matrix over. Source estimates obtained in the
         volume source space can then be morphed onto the MRI volume
         using this interpolator. If pos is a dict, this can be None.
-    sphere : array_like (length 4)
+    sphere : ndarray, shape (4,) | ConductorModel
         Define spherical source space bounds using origin and radius given
-        by (ox, oy, oz, rad) in mm. Only used if `bem` and `surface` are
-        both None.
+        by (ox, oy, oz, rad) in mm. Only used if ``bem`` and ``surface``
+        are both None. Can also be a spherical ConductorModel, which will
+        use the origin and radius.
     bem : str | None
         Define source space bounds using a BEM file (specifically the inner
         skull surface).
@@ -1583,9 +1584,17 @@ def setup_volume_source_space(subject=None, pos=5.0, mri=None,
                                  'check  freesurfer lookup table.'
                                  % (label, mri))
 
-    sphere = np.asarray(sphere)
+    if isinstance(sphere, ConductorModel):
+        if not sphere['is_sphere'] or len(sphere['layers']) == 0:
+            raise ValueError('sphere, if a ConductorModel, must be spherical '
+                             'with multiple layers, not a BEM or single-layer '
+                             'sphere (got %s)' % (sphere,))
+        sphere = tuple(1000 * sphere['r0']) + (1000 *
+                                               sphere['layers'][0]['rad'],)
+    sphere = np.asarray(sphere, dtype=float)
     if sphere.size != 4:
-        raise ValueError('"sphere" must be array_like with 4 elements')
+        raise ValueError('"sphere" must be array_like with 4 elements, got: %s'
+                         % (sphere,))
 
     # triage bounding argument
     if bem is not None:
@@ -2216,14 +2225,21 @@ def _filter_source_spaces(surf, limit, mri_head_t, src, n_jobs=1,
             logger.info('%d source space point%s omitted because of the '
                         '%6.1f-mm distance limit.' % tuple(extras))
         # Adjust the patch inds as well if necessary
-        if omit + omit_outside > 0 and s.get('patch_inds') is not None:
-            if s['nearest'] is None:
-                # This shouldn't happen, but if it does, we can probably come
-                # up with a more clever solution
-                raise RuntimeError('Cannot adjust patch information properly, '
-                                   'please contact the mne-python developers')
-            _add_patch_info(s)
+        if omit + omit_outside > 0:
+            _adjust_patch_info(s)
     logger.info('Thank you for waiting.')
+
+
+@verbose
+def _adjust_patch_info(s, verbose=None):
+    """Adjust patch information in place after vertex omission."""
+    if s.get('patch_inds') is not None:
+        if s['nearest'] is None:
+            # This shouldn't happen, but if it does, we can probably come
+            # up with a more clever solution
+            raise RuntimeError('Cannot adjust patch information properly, '
+                               'please contact the mne-python developers')
+        _add_patch_info(s)
 
 
 @verbose
@@ -2329,6 +2345,7 @@ def add_source_space_distances(src, dist_limit=np.inf, n_jobs=1, verbose=None):
     the source space to disk, as the computed distances will automatically be
     stored along with the source space data for future use.
     """
+    from scipy.sparse.csgraph import dijkstra
     n_jobs = check_n_jobs(n_jobs)
     src = _ensure_src(src)
     if not np.isscalar(dist_limit):
@@ -2345,8 +2362,7 @@ def add_source_space_distances(src, dist_limit=np.inf, n_jobs=1, verbose=None):
         # can't do introspection on dijkstra function because it's Cython,
         # so we'll just try quickly here
         try:
-            sparse.csgraph.dijkstra(sparse.csr_matrix(np.zeros((2, 2))),
-                                    limit=1.0)
+            dijkstra(sparse.csr_matrix(np.zeros((2, 2))), limit=1.0)
         except TypeError:
             raise RuntimeError('Cannot use "limit < np.inf" unless scipy '
                                '> 0.13 is installed')
@@ -2396,10 +2412,11 @@ def add_source_space_distances(src, dist_limit=np.inf, n_jobs=1, verbose=None):
 
 def _do_src_distances(con, vertno, run_inds, limit):
     """Compute source space distances in chunks."""
+    from scipy.sparse.csgraph import dijkstra
     if limit < np.inf:
-        func = partial(sparse.csgraph.dijkstra, limit=limit)
+        func = partial(dijkstra, limit=limit)
     else:
-        func = sparse.csgraph.dijkstra
+        func = dijkstra
     chunk_size = 20  # save memory by chunking (only a little slower)
     lims = np.r_[np.arange(0, len(run_inds), chunk_size), len(run_inds)]
     n_chunks = len(lims) - 1

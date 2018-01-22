@@ -9,8 +9,8 @@ import warnings
 
 from mne import (read_events, write_events, make_fixed_length_events,
                  find_events, pick_events, find_stim_steps, pick_channels,
-                 read_evokeds, Epochs)
-from mne.io import read_raw_fif
+                 read_evokeds, Epochs, create_info, compute_raw_covariance)
+from mne.io import read_raw_fif, RawArray
 from mne.tests.common import assert_naming
 from mne.utils import _TempDir, run_tests_if_main
 from mne.event import define_target_events, merge_events, AcqParserFIF
@@ -343,6 +343,32 @@ def test_find_events():
         if o is not None:
             os.environ['MNE_STIM_CHANNEL%s' % s] = o
 
+    # Test with list of stim channels
+    raw._data[stim_channel_idx, 1:101] = np.zeros(100)
+    raw._data[stim_channel_idx, 10:11] = 1
+    raw._data[stim_channel_idx, 30:31] = 3
+    stim_channel2 = 'STI 015'
+    stim_channel2_idx = pick_channels(raw.info['ch_names'],
+                                      include=[stim_channel2])
+    raw._data[stim_channel2_idx, :] = 0
+    raw._data[stim_channel2_idx, :100] = raw._data[stim_channel_idx, 5:105]
+    events1 = find_events(raw, stim_channel='STI 014')
+    events2 = events1.copy()
+    events2[:, 0] -= 5
+    events = find_events(raw, stim_channel=['STI 014', stim_channel2])
+    assert_array_equal(events[::2], events2)
+    assert_array_equal(events[1::2], events1)
+
+    # test initial_event argument
+    info = create_info(['MYSTI'], 1000, 'stim')
+    data = np.zeros((1, 1000))
+    raw = RawArray(data, info)
+    data[0, :10] = 100
+    data[0, 30:40] = 200
+    assert_array_equal(find_events(raw, 'MYSTI'), [[30, 0, 200]])
+    assert_array_equal(find_events(raw, 'MYSTI', initial_event=True),
+                       [[0, 0, 100], [30, 0, 200]])
+
 
 def test_pick_events():
     """Test pick events in a events ndarray."""
@@ -385,6 +411,27 @@ def test_make_fixed_length_events():
     assert_raises(ValueError, make_fixed_length_events, 'not raw', 2)
     assert_raises(ValueError, make_fixed_length_events, raw, 23, tmin, tmax,
                   'abc')
+
+    # Let's try some ugly sample rate/sample count combos
+    data = np.random.RandomState(0).randn(1, 27768)
+
+    # This breaks unless np.round() is used in make_fixed_length_events
+    info = create_info(1, 155.4499969482422)
+    raw = RawArray(data, info)
+    events = make_fixed_length_events(raw, 1, duration=raw.times[-1])
+    assert events[0, 0] == 0
+    assert len(events) == 1
+
+    # Without use_rounding=True this breaks
+    raw = RawArray(data[:, :21216], info)
+    events = make_fixed_length_events(raw, 1, duration=raw.times[-1])
+    assert events[0, 0] == 0
+    assert len(events) == 1
+
+    # Make sure it gets used properly by compute_raw_covariance
+    cov = compute_raw_covariance(raw, tstep=None)
+    expected = np.cov(data[:, :21216])
+    np.testing.assert_allclose(cov['data'], expected, atol=1e-12)
 
 
 def test_define_events():

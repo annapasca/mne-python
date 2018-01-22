@@ -25,7 +25,7 @@ from ..channels.channels import _contains_ch_type
 from ..defaults import _handle_default
 from ..io import show_fiff, Info
 from ..io.pick import (channel_type, channel_indices_by_type, pick_channels,
-                       _pick_data_channels)
+                       _pick_data_channels, _DATA_CH_TYPES_SPLIT)
 from ..utils import verbose, set_config, warn
 from ..externals.six import string_types
 from ..selection import (read_selection, _SELECTIONS, _EEG_SELECTIONS,
@@ -105,15 +105,18 @@ def tight_layout(pad=1.2, h_pad=None, w_pad=None, fig=None):
     try:  # see https://github.com/matplotlib/matplotlib/issues/2654
         with catch_warnings(record=True) as ws:
             fig.tight_layout(pad=pad, h_pad=h_pad, w_pad=w_pad)
-        for msg in [w.get_message() for w in ws]:
-            if not msg.startswith('This figure includes Axes'):
-                warn(msg)
     except Exception:
         try:
-            fig.set_tight_layout(dict(pad=pad, h_pad=h_pad, w_pad=w_pad))
+            with catch_warnings(record=True) as ws:
+                fig.set_tight_layout(dict(pad=pad, h_pad=h_pad, w_pad=w_pad))
         except Exception:
             warn('Matplotlib function "tight_layout" is not supported.'
                  ' Skipping subplot adjustment.')
+            return
+    for w in ws:
+        w = str(w.message) if hasattr(w, 'message') else w.get_message()
+        if not w.startswith('This figure includes Axes'):
+            warn(w)
 
 
 def _check_delayed_ssp(container):
@@ -616,7 +619,7 @@ def _radio_clicked(label, params):
     channels = params['selections'][label]
     ax_topo = params['fig_selection'].get_axes()[1]
     types = np.array([], dtype=int)
-    for this_type in ('mag', 'grad', 'eeg', 'seeg', 'ecog', 'hbo', 'hbr'):
+    for this_type in _DATA_CH_TYPES_SPLIT:
         if this_type in params['types']:
             types = np.concatenate(
                 [types, np.where(np.array(params['types']) == this_type)[0]])
@@ -723,11 +726,21 @@ def _plot_raw_onkey(event, params):
         params['ch_start'] -= params['n_channels']
         _channels_changed(params, len(params['inds']))
     elif event.key == 'right':
+        value = params['t_start'] + params['duration'] / 4
+        _plot_raw_time(value, params)
+        params['update_fun']()
+        params['plot_fun']()
+    elif event.key == 'shift+right':
         value = params['t_start'] + params['duration']
         _plot_raw_time(value, params)
         params['update_fun']()
         params['plot_fun']()
     elif event.key == 'left':
+        value = params['t_start'] - params['duration'] / 4
+        _plot_raw_time(value, params)
+        params['update_fun']()
+        params['plot_fun']()
+    elif event.key == 'shift+left':
         value = params['t_start'] - params['duration']
         _plot_raw_time(value, params)
         params['update_fun']()
@@ -917,9 +930,9 @@ def _mouse_click(event, params):
 
 def _handle_topomap_bads(ch_name, params):
     """Color channels in selection topomap when selecting bads."""
-    for type in ('mag', 'grad', 'eeg', 'seeg', 'hbo', 'hbr'):
-        if type in params['types']:
-            types = np.where(np.array(params['types']) == type)[0]
+    for t in _DATA_CH_TYPES_SPLIT:
+        if t in params['types']:
+            types = np.where(np.array(params['types']) == t)[0]
             break
     color_ind = np.where(np.array(
         params['info']['ch_names'])[types] == ch_name)[0]
@@ -1348,7 +1361,7 @@ def plot_sensors(info, kind='topomap', ch_type=None, title=None,
     if not isinstance(info, Info):
         raise TypeError('info must be an instance of Info not %s' % type(info))
     ch_indices = channel_indices_by_type(info)
-    allowed_types = ['mag', 'grad', 'eeg', 'seeg', 'ecog']
+    allowed_types = _DATA_CH_TYPES_SPLIT
     if ch_type is None:
         for this_type in allowed_types:
             if _contains_ch_type(info, this_type):
@@ -1446,7 +1459,8 @@ def _onpick_sensor(event, fig, ax, pos, ch_names, show_names):
 
 def _close_event(event, fig):
     """Listen for sensor plotter close event."""
-    fig.lasso.disconnect()
+    if fig.lasso is not None:
+        fig.lasso.disconnect()
 
 
 def _plot_sensors(pos, colors, bads, ch_names, title, show_names, ax, show,
@@ -1496,6 +1510,8 @@ def _plot_sensors(pos, colors, bads, ch_names, title, show_names, ax, show,
 
         if select:
             fig.lasso = SelectFromCollection(ax, pts, ch_names)
+        else:
+            fig.lasso = None
 
         ax.axis("off")  # remove border around figure
 
@@ -1823,7 +1839,6 @@ def _plot_annotations(raw, params):
 
     while len(params['ax_hscroll'].collections) > 0:
         params['ax_hscroll'].collections.pop()
-
     segments = list()
     # sort the segments by start time
     ann_order = raw.annotations.onset.argsort(axis=0)
@@ -1838,7 +1853,8 @@ def _plot_annotations(raw, params):
         params['ax_hscroll'].fill_betweenx(
             (0., 1.), annot_start, annot_end, alpha=0.3,
             color=params['segment_colors'][dscr])
-    params['segments'] = np.array(segments)
+    # Adjust half a sample backward to make it clear what is included
+    params['segments'] = np.array(segments) - 0.5 / raw.info['sfreq']
     params['annot_description'] = descriptions
 
 
@@ -1871,8 +1887,9 @@ def _annotations_closed(event, params):
     import matplotlib as mpl
     import matplotlib.pyplot as plt
     plt.close(params['fig_annotation'])
-    params['ax'].selector.disconnect_events()
-    params['ax'].selector = None
+    if params['ax'].selector is not None:
+        params['ax'].selector.disconnect_events()
+        params['ax'].selector = None
     params['fig_annotation'] = None
     if params['segment_line'] is not None:
         params['segment_line'].remove()
@@ -2009,8 +2026,7 @@ def _setup_butterfly(params):
         types = np.array(params['types'])[params['orig_inds']]
         if params['group_by'] in ['type', 'original']:
             inds = params['inds']
-            eeg = 'seeg' if 'seeg' in types else 'eeg'
-            labels = [t for t in ['grad', 'mag', eeg, 'eog', 'ecg']
+            labels = [t for t in _DATA_CH_TYPES_SPLIT + ['eog', 'ecg']
                       if t in types] + ['misc']
             ticks = np.arange(5, 5 * (len(labels) + 1), 5)
             offs = {l: t for (l, t) in zip(labels, ticks)}

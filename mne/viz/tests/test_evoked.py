@@ -12,7 +12,7 @@ import os.path as op
 import warnings
 
 import numpy as np
-from numpy.testing import assert_raises
+from numpy.testing import assert_raises, assert_allclose
 from nose.tools import assert_true
 import pytest
 
@@ -29,7 +29,6 @@ import matplotlib
 matplotlib.use('Agg')  # for testing don't use X server
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
-
 
 base_dir = op.join(op.dirname(__file__), '..', '..', 'io', 'tests', 'data')
 evoked_fname = op.join(base_dir, 'test-ave.fif')
@@ -77,6 +76,7 @@ def _get_epochs_delayed_ssp():
 def test_plot_evoked():
     """Test plotting of evoked."""
     import matplotlib.pyplot as plt
+    rng = np.random.RandomState(0)
     evoked = _get_epochs().average()
     with warnings.catch_warnings(record=True):
         fig = evoked.plot(proj=True, hline=[1], exclude=[], window_title='foo')
@@ -121,13 +121,43 @@ def test_plot_evoked():
 
         cov = read_cov(cov_fname)
         cov['method'] = 'empirical'
-        evoked.plot_white(cov)
+        # test rank param.
+        evoked.plot_white(cov, rank={'mag': 101, 'grad': 201})
+        evoked.plot_white(cov, rank={'mag': 101})  # test rank param.
+        evoked.plot_white(cov, rank={'grad': 201})  # test rank param.
+        assert_raises(
+            ValueError, evoked.plot_white, cov,
+            rank={'mag': 101, 'grad': 201, 'meg': 306})
+        assert_raises(
+            ValueError, evoked.plot_white, cov, rank={'meg': 306})
+
         evoked.plot_white([cov, cov])
 
         # plot_compare_evokeds: test condition contrast, CI, color assignment
         plot_compare_evokeds(evoked.copy().pick_types(meg='mag'))
-        plot_compare_evokeds(evoked.copy().pick_types(meg='grad'),
-                             picks=[1, 2])
+        plot_compare_evokeds(
+            evoked.copy().pick_types(meg='grad'), picks=[1, 2],
+            show_sensors="upper right", show_legend="upper left")
+        evokeds = [evoked.copy() for _ in range(10)]
+        for evoked in evokeds:
+            evoked.data += (rng.randn(*evoked.data.shape) *
+                            np.std(evoked.data, axis=-1, keepdims=True))
+        for picks in ([0], [1], [2], [0, 2], [1, 2], [0, 1, 2],):
+            figs = plot_compare_evokeds([evokeds], picks=picks, ci=0.95)
+            if not isinstance(figs, list):
+                figs = [figs]
+            for fig in figs:
+                ext = fig.axes[0].collections[0].get_paths()[0].get_extents()
+                xs, ylim = ext.get_points().T
+                assert_allclose(xs, evoked.times[[0, -1]])
+                line = fig.axes[0].lines[0]
+                xs = line.get_xdata()
+                assert_allclose(xs, evoked.times)
+                ys = line.get_ydata()
+                assert (ys < ylim[1]).all()
+                assert (ys > ylim[0]).all()
+            plt.close('all')
+
         evoked.rename_channels({'MEG 2142': "MEG 1642"})
         assert len(plot_compare_evokeds(evoked)) == 2
         colors = dict(red='r', blue='b')
@@ -144,37 +174,75 @@ def test_plot_evoked():
         contrast["red/stim"] = list((evoked.copy(), red))
         contrast["blue/stim"] = list((evoked.copy(), blue))
         # test a bunch of params at once
+        for evokeds_ in (evoked.copy().pick_types(meg='mag'), contrast,
+                         [red, blue], [[red, evoked], [blue, evoked]]):
+            plot_compare_evokeds(evokeds_, picks=0, ci=True)  # also tests CI
+        plt.close('all')
+        # test styling +  a bunch of other params at once
+        colors, linestyles = dict(red='r', blue='b'), dict(red='--', blue='-')
         plot_compare_evokeds(contrast, colors=colors, linestyles=linestyles,
                              picks=[0, 2], vlines=[.01, -.04], invert_y=True,
                              truncate_yaxis=False, ylim=dict(mag=(-10, 10)),
                              styles={"red/stim": {"linewidth": 1}},
                              show_sensors=True)
-        assert_raises(ValueError, plot_compare_evokeds,
-                      contrast, picks='str')  # bad picks: not int
-        assert_raises(ValueError, plot_compare_evokeds, evoked, picks=3,
-                      colors=dict(fake=1))  # 'fake' not in conds
-        assert_raises(ValueError, plot_compare_evokeds, evoked, picks=3,
-                      styles=dict(fake=1))  # 'fake' not in conds
-        assert_raises(ValueError, plot_compare_evokeds, [[1, 2], [3, 4]],
-                      picks=3)  # evoked must contain Evokeds
-        assert_raises(ValueError, plot_compare_evokeds, evoked, picks=3,
-                      styles=dict(err=1))  # bad styles dict
-        assert_raises(ValueError, plot_compare_evokeds, evoked, picks=3,
-                      gfp=True)  # no single-channel GFP
-        assert_raises(TypeError, plot_compare_evokeds, evoked, picks=3,
-                      ci='fake')  # ci must be float or None
-        assert_raises(TypeError, plot_compare_evokeds, evoked, picks=3,
-                      show_sensors='a')  # show_sensors must be int or bool
-        contrast["red/stim"] = red
-        contrast["blue/stim"] = blue
+        # various bad styles
+        params = [dict(picks=3, colors=dict(fake=1)),
+                  dict(picks=3, styles=dict(fake=1)), dict(picks=3, gfp=True),
+                  dict(picks=3, show_sensors="a"),
+                  dict(colors=dict(red=10., blue=-2))]
+        for param in params:
+            assert_raises(ValueError, plot_compare_evokeds, evoked, **param)
+        assert_raises(TypeError, plot_compare_evokeds, evoked, picks='str')
+        assert_raises(TypeError, plot_compare_evokeds, evoked, vlines='x')
+        plt.close('all')
+        # `evoked` must contain Evokeds
+        assert_raises(ValueError, plot_compare_evokeds, [[1, 2], [3, 4]])
+        # `ci` must be float or None
+        assert_raises(TypeError, plot_compare_evokeds, contrast, ci='err')
+        # test all-positive ylim
+        contrast["red/stim"], contrast["blue/stim"] = red, blue
         plot_compare_evokeds(contrast, picks=[0], colors=['r', 'b'],
                              ylim=dict(mag=(1, 10)), ci=_parametric_ci,
-                             truncate_yaxis='max_ticks')
+                             truncate_yaxis='max_ticks', show_sensors=False,
+                             show_legend=False)
+
+        # sequential colors
+        evokeds = (evoked, blue, red)
+        contrasts = {"a{}/b".format(ii): ev for ii, ev in
+                     enumerate(evokeds)}
+        colors = {"a" + str(ii): ii for ii, _ in enumerate(evokeds)}
+        contrasts["a1/c"] = evoked.copy()
+        for split in (True, False):
+            for linestyles in (["-"], {"b": "-", "c": ":"}):
+                plot_compare_evokeds(
+                    contrasts, colors=colors, picks=[0], cmap='Reds',
+                    split_legend=split, linestyles=linestyles,
+                    ci=False, show_sensors=False)
+        colors = {"a" + str(ii): ii / len(evokeds)
+                  for ii, _ in enumerate(evokeds)}
+        plot_compare_evokeds(
+            contrasts, colors=colors, picks=[0], cmap='Reds',
+            split_legend=split, linestyles=linestyles, ci=False,
+            show_sensors=False)
+        red.info["chs"][0]["loc"][:2] = 0  # test plotting channel at zero
+        plot_compare_evokeds(red, picks=[0],
+                             ci=lambda x: [x.std(axis=0), -x.std(axis=0)])
+        plot_compare_evokeds([red, blue], picks=[0], cmap="summer", ci=None,
+                             split_legend=None)
+        plot_compare_evokeds([red, blue], cmap=None, split_legend=True)
+        assert_raises(ValueError, plot_compare_evokeds, [red] * 20)
+        assert_raises(ValueError, plot_compare_evokeds, contrasts,
+                      cmap='summer')
+
+        plt.close('all')
 
         # Hack to test plotting of maxfiltered data
         evoked_sss = evoked.copy()
-        evoked_sss.info['proc_history'] = [dict(max_info=None)]
-        evoked_sss.plot_white(cov)
+        sss = dict(sss_info=dict(in_order=80, components=np.arange(80)))
+        evoked_sss.info['proc_history'] = [dict(max_info=sss)]
+        evoked_sss.plot_white(cov, rank={'meg': 64})
+        assert_raises(
+            ValueError, evoked_sss.plot_white, cov, rank={'grad': 201})
         evoked_sss.plot_white(cov_fname)
 
         # plot with bad channels excluded, spatial_colors, zorder & pos. layout
@@ -184,6 +252,7 @@ def test_plot_evoked():
         evoked.plot(exclude=[], spatial_colors=True, zorder='unsorted')
         assert_raises(TypeError, evoked.plot, zorder='asdf')
         plt.close('all')
+
     evoked.plot_sensors()  # Test plot_sensors
     plt.close('all')
 

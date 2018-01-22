@@ -26,9 +26,9 @@ from .compensator import set_current_comp, make_compensator
 from .write import (start_file, end_file, start_block, end_block,
                     write_dau_pack16, write_float, write_double,
                     write_complex64, write_complex128, write_int,
-                    write_id, write_string, write_name_list, _get_split_size)
+                    write_id, write_string, _get_split_size)
 
-from ..annotations import _annotations_starts_stops
+from ..annotations import _annotations_starts_stops, _write_annotations
 from ..filter import (filter_data, notch_filter, resample, next_fast_len,
                       _resample_stim_channels, _filt_check_picks,
                       _filt_update_info)
@@ -38,7 +38,7 @@ from ..utils import (_check_fname, _check_pandas_installed, sizeof_fmt,
                      check_fname, _get_stim_channel,
                      logger, verbose, _time_mask, warn, SizeMixin,
                      copy_function_doc_to_method_doc,
-                     _check_preload, _scale_dep)
+                     _check_preload)
 from ..viz import plot_raw, plot_raw_psd, plot_raw_psd_topo
 from ..defaults import _handle_default
 from ..externals.six import string_types
@@ -60,8 +60,7 @@ class ToDataFrameMixin(object):
         return picks
 
     def to_data_frame(self, picks=None, index=None, scaling_time=1e3,
-                      scalings=None, copy=True, start=None, stop=None,
-                      scale_time=None):
+                      scalings=None, copy=True, start=None, stop=None):
         """Export data in tabular structure as a pandas DataFrame.
 
         Columns and indices will depend on the object being converted.
@@ -106,9 +105,6 @@ class ToDataFrameMixin(object):
         from ..epochs import BaseEpochs
         from ..evoked import Evoked
         from ..source_estimate import _BaseSourceEstimate
-        scaling_time = _scale_dep(scaling_time, scale_time,
-                                  'scaling_time', 'scale_time')
-        del scale_time
 
         pd = _check_pandas_installed()
         mindex = list()
@@ -707,9 +703,15 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                         duration = annotations.duration[ind] + onset
                         annotations.duration[ind] = duration
                         annotations.onset[ind] = self.times[0] - offset
-                elif onset + annotations.duration[ind] > self.times[-1]:
+                elif (onset + annotations.duration[ind] >
+                      self.times[-1] + 1.1 / self.info['sfreq']):
+                    # We have to permit onset+duration to appear to go one past
+                    # the last sample in order to actually include the last
+                    # sample...
                     limited += 1
-                    annotations.duration[ind] = self.times[-1] - onset
+                    annotations.duration[ind] = (self.times[-1] +
+                                                 1. / self.info['sfreq'] -
+                                                 onset)
             annotations.onset = np.delete(annotations.onset, omit_ind)
             annotations.duration = np.delete(annotations.duration, omit_ind)
             annotations.description = np.delete(annotations.description,
@@ -1096,8 +1098,9 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
     def filter(self, l_freq, h_freq, picks=None, filter_length='auto',
                l_trans_bandwidth='auto', h_trans_bandwidth='auto', n_jobs=1,
                method='fir', iir_params=None, phase='zero',
-               fir_window='hamming', fir_design=None,
-               skip_by_annotation=None, pad='reflect_limited', verbose=None):
+               fir_window='hamming', fir_design='firwin',
+               skip_by_annotation=('edge', 'bad_acq_skip'),
+               pad='reflect_limited', verbose=None):
         """Filter a subset of channels.
 
         Applies a zero-phase low-pass, high-pass, band-pass, or band-stop
@@ -1188,22 +1191,21 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
 
             .. versionadded:: 0.13
         fir_design : str
-            Can be "firwin" (default in 0.16) to use
-            :func:`scipy.signal.firwin`, or "firwin2" (default in 0.15 and
-            before) to use :func:`scipy.signal.firwin2`. "firwin" uses a
-            time-domain design technique that generally gives improved
+            Can be "firwin" (default) to use :func:`scipy.signal.firwin`,
+            or "firwin2" to use :func:`scipy.signal.firwin2`. "firwin" uses
+            a time-domain design technique that generally gives improved
             attenuation using fewer samples than "firwin2".
 
             .. versionadded:: 0.15
-
         skip_by_annotation : str | list of str
             If a string (or list of str), any annotation segment that begins
             with the given string will not be included in filtering, and
             segments on either side of the given excluded annotated segment
             will be filtered separately (i.e., as independent signals).
-            The default in 0.16 (``'edge'``) will separately filter any
-            segments that were concatenated by :func:`mne.concatenate_raws`
-            or :meth:`mne.io.Raw.append`. To disable, provide an empty list.
+            The default (``('edge', 'bad_acq_skip')`` will separately filter
+            any segments that were concatenated by :func:`mne.concatenate_raws`
+            or :meth:`mne.io.Raw.append`, or separated during acquisition.
+            To disable, provide an empty list.
 
             .. versionadded:: 0.16.
         pad : str
@@ -1241,23 +1243,9 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
         update_info, picks = _filt_check_picks(self.info, picks,
                                                l_freq, h_freq)
         # Deal with annotations
-        if skip_by_annotation is None:
-            if self.annotations is not None and any(
-                    desc.upper().startswith('EDGE')
-                    for desc in self.annotations.description):
-                warn('skip_by_annotation defaults to [] in 0.15 but will '
-                     'change to "edge" in 0.16, set it explicitly to avoid '
-                     'this warning', DeprecationWarning)
-            skip_by_annotation = []
-        onsets, ends = _annotations_starts_stops(self, skip_by_annotation,
-                                                 'skip_by_annotation')
-        if len(onsets) == 0 or onsets[0] != 0:
-            onsets = np.concatenate([[0], onsets])
-            ends = np.concatenate([[0], ends])
-        if len(ends) == 1 or ends[-1] != len(self.times):
-            onsets = np.concatenate([onsets, [len(self.times)]])
-            ends = np.concatenate([ends, [len(self.times)]])
-        for start, stop in zip(ends[:-1], onsets[1:]):
+        onsets, ends = _annotations_starts_stops(
+            self, skip_by_annotation, 'skip_by_annotation', invert=True)
+        for start, stop in zip(onsets, ends):
             filter_data(
                 self._data[:, start:stop], self.info['sfreq'], l_freq, h_freq,
                 picks, filter_length, l_trans_bandwidth, h_trans_bandwidth,
@@ -1273,7 +1261,7 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                      notch_widths=None, trans_bandwidth=1.0, n_jobs=1,
                      method='fft', iir_params=None, mt_bandwidth=None,
                      p_value=0.05, phase='zero', fir_window='hamming',
-                     fir_design=None, pad='reflect_limited', verbose=None):
+                     fir_design='firwin', pad='reflect_limited', verbose=None):
         """Notch filter a subset of channels.
 
         Applies a zero-phase notch filter to the channels selected by
@@ -1350,10 +1338,9 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
 
             .. versionadded:: 0.13
         fir_design : str
-            Can be "firwin" (default in 0.16) to use
-            :func:`scipy.signal.firwin`, or "firwin2" (default in 0.15 and
-            before) to use :func:`scipy.signal.firwin2`. "firwin" uses a
-            time-domain design technique that generally gives improved
+            Can be "firwin" (default) to use :func:`scipy.signal.firwin`,
+            or "firwin2" to use :func:`scipy.signal.firwin2`. "firwin" uses
+            a time-domain design technique that generally gives improved
             attenuation using fewer samples than "firwin2".
 
             ..versionadded:: 0.15
@@ -1767,16 +1754,16 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
     def plot_psd(self, tmin=0.0, tmax=np.inf, fmin=0, fmax=np.inf,
                  proj=False, n_fft=None, picks=None, ax=None,
                  color='black', area_mode='std', area_alpha=0.33,
-                 n_overlap=0, dB=True, average=None, show=True,
-                 n_jobs=1, line_alpha=None, spatial_colors=None,
+                 n_overlap=0, dB=True, estimate='auto', average=None,
+                 show=True, n_jobs=1, line_alpha=None, spatial_colors=None,
                  xscale='linear', reject_by_annotation=True, verbose=None):
         return plot_raw_psd(
             self, tmin=tmin, tmax=tmax, fmin=fmin, fmax=fmax, proj=proj,
             n_fft=n_fft, picks=picks, ax=ax, color=color, area_mode=area_mode,
-            area_alpha=area_alpha, n_overlap=n_overlap, dB=dB, average=average,
-            show=show, n_jobs=n_jobs, line_alpha=line_alpha,
-            spatial_colors=spatial_colors, xscale=xscale,
-            reject_by_annotation=reject_by_annotation)
+            area_alpha=area_alpha, n_overlap=n_overlap, dB=dB,
+            estimate=estimate, average=average, show=show, n_jobs=n_jobs,
+            line_alpha=line_alpha, spatial_colors=spatial_colors,
+            xscale=xscale, reject_by_annotation=reject_by_annotation)
 
     @copy_function_doc_to_method_doc(plot_raw_psd_topo)
     def plot_psd_topo(self, tmin=0., tmax=None, fmin=0, fmax=100, proj=False,
@@ -2195,14 +2182,44 @@ def _write_raw(fname, raw, info, picks, fmt, data_type, reset_range, start,
 
     pos_prev = fid.tell()
     if pos_prev > split_size:
+        fid.close()
         raise ValueError('file is larger than "split_size" after writing '
                          'measurement information, you must use a larger '
                          'value for split size: %s plus enough bytes for '
                          'the chosen buffer_size' % pos_prev)
     next_file_buffer = 2 ** 20  # extra cushion for last few post-data tags
-    for first in range(start, stop, buffer_size):
-        # Write blocks <= buffer_size in size
-        last = min(first + buffer_size, stop)
+
+    # Check to see if this has acquisition skips and, if so, if we can
+    # write out empty buffers instead of zeroes
+    firsts = list(range(start, stop, buffer_size))
+    lasts = np.array(firsts) + buffer_size
+    if lasts[-1] > stop:
+        lasts[-1] = stop
+    sk_onsets, sk_ends = _annotations_starts_stops(raw, 'bad_acq_skip')
+    do_skips = False
+    if len(sk_onsets) > 0:
+        if np.in1d(sk_onsets, firsts).all() and np.in1d(sk_ends, lasts).all():
+            do_skips = True
+        else:
+            if part_idx == 0:
+                warn('Acquisition skips detected but did not fit evenly into '
+                     'output buffer_size, will be written as zeroes.')
+
+    n_current_skip = 0
+    for first, last in zip(firsts, lasts):
+        if do_skips:
+            if ((first >= sk_onsets) & (last <= sk_ends)).any():
+                # Track how many we have
+                n_current_skip += 1
+                continue
+            elif n_current_skip > 0:
+                # Write out an empty buffer instead of data
+                write_int(fid, FIFF.FIFF_DATA_SKIP, n_current_skip)
+                # These two NOPs appear to be optional (MaxFilter does not do
+                # it, but some acquisition machines do) so let's not bother.
+                # write_nop(fid)
+                # write_nop(fid)
+                n_current_skip = 0
         data, times = raw[use_picks, first:last]
         assert len(times) == last - first
 
@@ -2223,6 +2240,7 @@ def _write_raw(fname, raw, info, picks, fmt, data_type, reset_range, start,
         if overage > 0:
             # This should occur on the first buffer write of the file, so
             # we should mention the space required for the meas info
+            fid.close()
             raise ValueError(
                 'buffer size (%s) is too large for the given split size (%s) '
                 'by %s bytes after writing info (%s) and leaving enough space '
@@ -2319,16 +2337,7 @@ def _start_writing_raw(name, info, sel=None, data_type=FIFF.FIFFT_FLOAT,
     # Annotations
     #
     if annotations is not None and len(annotations.onset) > 0:
-        start_block(fid, FIFF.FIFFB_MNE_ANNOTATIONS)
-        write_float(fid, FIFF.FIFF_MNE_BASELINE_MIN, annotations.onset)
-        write_float(fid, FIFF.FIFF_MNE_BASELINE_MAX,
-                    annotations.duration + annotations.onset)
-        # To allow : in description, they need to be replaced for serialization
-        write_name_list(fid, FIFF.FIFF_COMMENT, [d.replace(':', ';') for d in
-                                                 annotations.description])
-        if annotations.orig_time is not None:
-            write_double(fid, FIFF.FIFF_MEAS_DATE, annotations.orig_time)
-        end_block(fid, FIFF.FIFFB_MNE_ANNOTATIONS)
+        _write_annotations(fid, annotations)
 
     #
     # Start the raw data

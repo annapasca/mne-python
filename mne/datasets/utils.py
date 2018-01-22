@@ -226,6 +226,7 @@ def _data_path(path=None, force_update=False, update_path=True, download=True,
         'testing': 'MNE_DATASETS_TESTING_PATH',
         'multimodal': 'MNE_DATASETS_MULTIMODAL_PATH',
         'visual_92_categories': 'MNE_DATASETS_VISUAL_92_CATEGORIES_PATH',
+        'kiloword': 'MNE_DATASETS_KILOWORD_PATH',
         'mtrf': 'MNE_DATASETS_MTRF_PATH',
         'fieldtrip_cmc': 'MNE_DATASETS_FIELDTRIP_CMC_PATH'
     }[name]
@@ -233,7 +234,7 @@ def _data_path(path=None, force_update=False, update_path=True, download=True,
     path = _get_path(path, key, name)
     # To update the testing or misc dataset, push commits, then make a new
     # release on GitHub. Then update the "releases" variable:
-    releases = dict(testing='0.41', misc='0.3')
+    releases = dict(testing='0.42', misc='0.3')
     # And also update the "hashes['testing']" variable below.
 
     # To update any other dataset, update the data archive itself (upload
@@ -260,15 +261,17 @@ def _data_path(path=None, force_update=False, update_path=True, download=True,
         visual_92_categories=[
             'https://osf.io/8ejrs/download',
             'https://osf.io/t4yjp/download'],
-        mtrf="https://superb-dca2.dl.sourceforge.net/project/aespa/"
-             "mTRF_1.5.zip",
-        fieldtrip_cmc='ftp://ftp.fieldtriptoolbox.org/pub/fieldtrip/'
-                      'tutorial/SubjectCMC.zip',
+        mtrf='https://osf.io/h85s2/download',
+        kiloword='https://osf.io/qkvf9/download',
+        fieldtrip_cmc='https://osf.io/j9b6s/download',
     )
     # filename of the resulting downloaded archive (only needed if the URL
     # name does not match resulting filename)
     archive_names = dict(
+        fieldtrip_cmc='SubjectCMC.zip',
+        kiloword='MNE-kiloword-data.tar.gz',
         misc='mne-misc-data-%s.tar.gz' % releases['misc'],
+        mtrf='mTRF_1.5.zip',
         multimodal='MNE-multimodal-data.tar.gz',
         sample='MNE-sample-data-processed.tar.gz',
         somato='MNE-somato-data.tar.gz',
@@ -308,10 +311,11 @@ def _data_path(path=None, force_update=False, update_path=True, download=True,
         sample='fc2d5b9eb0a144b1d6ba84dc3b983602',
         somato='f3e3a8441477bb5bacae1d0c6e0964fb',
         spm='9f43f67150e3b694b523a21eb929ea75',
-        testing='6e7f0f2506b98cad0f2161162ef5f9f3',
+        testing='cde862722ec8fcc9e59d84bb816f7469',
         multimodal='26ec847ae9ab80f58f204d09e2c08367',
         visual_92_categories=['74f50bbeb65740903eadc229c9fa759f',
                               '203410a98afc9df9ae8ba9f933370e20'],
+        kiloword='3a124170795abbd2e48aae8727e719a8',
         mtrf='273a390ebbc48da2c3184b01a82e4636',
         fieldtrip_cmc='6f9fd6520f9a66e20994423808d2528c'
     )
@@ -387,7 +391,7 @@ def _data_path(path=None, force_update=False, update_path=True, download=True,
             for an in full_name:
                 os.remove(op.join(path, an))
 
-    logger.info('Successfully extracted to: %s' % folder_path)
+        logger.info('Successfully extracted to: %s' % folder_path)
 
     _do_path_update(path, update_path, key, name)
     path = folder_path[0]
@@ -501,7 +505,8 @@ def has_dataset(name):
         'spm': 'MNE-spm-face',
         'multimodal': 'MNE-multimodal-data',
         'testing': 'MNE-testing-data',
-        'visual_92_categories': 'visual_92_categories-data',
+        'visual_92_categories': 'MNE-visual_92_categories-data',
+        'kiloword': 'MNE-kiloword-data',
     }[name]
     archive_name = None
     if name == 'brainstorm':
@@ -518,7 +523,8 @@ def _download_all_example_data(verbose=True):
     # verbose=True by default so we get nice status messages
     # Consider adding datasets from here to CircleCI for PR-auto-build
     from . import (sample, testing, misc, spm_face, somato, brainstorm, megsim,
-                   eegbci, multimodal, hf_sef, mtrf, fieldtrip_cmc)
+                   eegbci, multimodal, hf_sef, mtrf, fieldtrip_cmc,
+                   kiloword)
     sample.data_path()
     testing.data_path()
     misc.data_path()
@@ -528,6 +534,7 @@ def _download_all_example_data(verbose=True):
     multimodal.data_path()
     mtrf.data_path()
     fieldtrip_cmc.data_path()
+    kiloword.data_path()
     sys.argv += ['--accept-brainstorm-license']
     try:
         brainstorm.bst_raw.data_path()

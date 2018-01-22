@@ -89,10 +89,10 @@ def _ensure_int(x, name='unknown', must_be='an int'):
     return x
 
 
-def _pl(x):
+def _pl(x, non_pl=''):
     """Determine if plural should be used."""
     len_x = x if isinstance(x, (integer_types, np.generic)) else len(x)
-    return '' if len_x == 1 else 's'
+    return non_pl if len_x == 1 else 's'
 
 
 def _explain_exception(start=-1, stop=None, prefix='> '):
@@ -1059,8 +1059,6 @@ requires_pysurfer = partial(requires_module, name='PySurfer',
                             call="""import warnings
 with warnings.catch_warnings(record=True):
     from surfer import Brain""")
-requires_PIL = partial(requires_module, name='PIL',
-                       call='from PIL import Image')
 requires_good_network = partial(
     requires_module, name='good network connection',
     call='if int(os.environ.get("MNE_SKIP_NETWORK_TESTS", 0)):\n'
@@ -1173,11 +1171,12 @@ def run_subprocess(command, verbose=None, *args, **kwargs):
     stderr : str
         Stderr returned by the process.
     """
-    for stdxxx, sys_stdxxx in (['stderr', sys.stderr],
-                               ['stdout', sys.stdout]):
-        if stdxxx not in kwargs:
+    for stdxxx, sys_stdxxx, thresh in (
+            ['stderr', sys.stderr, logging.ERROR],
+            ['stdout', sys.stdout, logging.WARNING]):
+        if stdxxx not in kwargs and logger.level >= thresh:
             kwargs[stdxxx] = subprocess.PIPE
-        elif kwargs[stdxxx] is sys_stdxxx:
+        elif kwargs.get(stdxxx, sys_stdxxx) is sys_stdxxx:
             if isinstance(sys_stdxxx, StringIO):
                 # nose monkey patches sys.stderr and sys.stdout to StringIO
                 kwargs[stdxxx] = subprocess.PIPE
@@ -1207,15 +1206,10 @@ def run_subprocess(command, verbose=None, *args, **kwargs):
         logger.error('Command not found: %s' % command_name)
         raise
     stdout_, stderr = p.communicate()
-    stdout_ = '' if stdout_ is None else stdout_.decode('utf-8')
-    stderr = '' if stderr is None else stderr.decode('utf-8')
-
-    if stdout_.strip():
-        logger.info("stdout:\n%s" % stdout_)
-    if stderr.strip():
-        logger.info("stderr:\n%s" % stderr)
-
+    stdout_ = u'' if stdout_ is None else stdout_.decode('utf-8')
+    stderr = u'' if stderr is None else stderr.decode('utf-8')
     output = (stdout_, stderr)
+
     if p.returncode:
         print(output)
         err_fun = subprocess.CalledProcessError.__init__
@@ -1486,6 +1480,7 @@ known_config_types = (
     'MNE_DATASETS_SPM_FACE_PATH',
     'MNE_DATASETS_TESTING_PATH',
     'MNE_DATASETS_VISUAL_92_CATEGORIES_PATH',
+    'MNE_DATASETS_KILOWORD_PATH',
     'MNE_DATASETS_FIELDTRIP_CMC_PATH',
     'MNE_FORCE_SERIAL',
     'MNE_KIT2FIFF_STIM_CHANNELS',
@@ -2154,14 +2149,17 @@ def _check_preload(inst, msg):
                            '%s.load_data().' % (name, name))
 
 
-def _check_pandas_installed():
+def _check_pandas_installed(strict=True):
     """Aux function."""
     try:
-        import pandas as pd
-        return pd
+        import pandas
+        return pandas
     except ImportError:
-        raise RuntimeError('For this method to work the Pandas library is'
-                           ' required.')
+        if strict is True:
+            raise RuntimeError('For this functionality to work the Pandas '
+                               'library is required.')
+        else:
+            return False
 
 
 def _check_pandas_index_arguments(index, defaults):
@@ -2663,19 +2661,3 @@ def open_docs(kind=None, version=None):
         raise ValueError('version must be one of %s, got %s'
                          % (version, versions))
     webbrowser.open_new_tab('https://martinos.org/mne/%s/%s' % (version, kind))
-
-
-def _scale_dep(want, got, name_want, name_got):
-    if got is not None:
-        warn('%s is deprecated and will be removed in 0.16, use %s instead'
-             % (name_got, name_want), DeprecationWarning)
-        want = got
-    return want
-
-
-def _freqs_dep(freqs, frequencies, prefix=''):
-    if frequencies is not None:
-        freqs = frequencies
-        warn('%sfrequencies is deprecated and will be removed in 0.16, use '
-             '%sfreqs instead.' % (prefix, prefix), DeprecationWarning)
-    return freqs

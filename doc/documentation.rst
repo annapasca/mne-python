@@ -138,9 +138,11 @@ There are also **examples**, which contain a short use-case to highlight MNE-fun
 
     manual/io.rst
     auto_tutorials/plot_creating_data_structures.rst
+    auto_tutorials/plot_metadata_epochs.rst
     auto_tutorials/plot_modifying_data_inplace.rst
     auto_tutorials/plot_ecog.rst
     manual/memory.rst
+    manual/migrating.rst
 
 .. raw:: html
 
@@ -463,7 +465,7 @@ There are also **examples**, which contain a short use-case to highlight MNE-fun
       <div class="panel panel-default">
         <div class="panel-heading">
           <h4 class="panel-title">
-            <a data-toggle="collapse" href="#collapse_statistics">Statistics in sensor- and source-space</a>
+            <a data-toggle="collapse" href="#collapse_statistics">Statistics</a>
           </h4>
         </div>
         <div id="collapse_statistics" class="panel-collapse collapse">
@@ -475,14 +477,13 @@ There are also **examples**, which contain a short use-case to highlight MNE-fun
 .. toctree::
     :maxdepth: 1
 
-    manual/statistics.rst
+    auto_tutorials/plot_background_statistics.rst
 
 **Sensor Space**
 
 .. toctree::
     :maxdepth: 1
 
-    auto_tutorials/plot_stats_cluster_methods.rst
     auto_tutorials/plot_stats_spatio_temporal_cluster_sensors.rst
     auto_tutorials/plot_stats_cluster_1samp_test_time_frequency.rst
     auto_tutorials/plot_stats_cluster_time_frequency.rst
@@ -669,6 +670,9 @@ There are also **examples**, which contain a short use-case to highlight MNE-fun
     manual/gui/browse.rst
     manual/appendix/bem_model.rst
     manual/appendix/c_misc.rst
+    manual/appendix/c_release_notes.rst
+    manual/appendix/c_EULA.rst
+    manual/appendix/martinos.rst
 
 **MNE-MATLAB**
 

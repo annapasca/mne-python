@@ -160,6 +160,9 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
         group_by = "type"
         combine = "gfp"
 
+    if combine is not None:
+        ts_args["show_sensors"] = False
+
     if picks is None:
         picks = pick_types(epochs.info, meg=True, eeg=True, ref_meg=False,
                            exclude='bads')
@@ -342,13 +345,17 @@ def _pick_and_combine(epochs, combine, all_picks, all_ch_types, scalings,
     combine_title = (" (" + combine + ")"
                      if isinstance(combine, string_types) else "")
     if combine == "gfp":
-        combine = lambda data: np.sqrt((data * data).mean(axis=1))  # noqa
+        def combine(data):
+            return np.sqrt((data * data).mean(axis=1))
     elif combine == "mean":
-        combine = lambda data: np.mean(data, axis=1)  # noqa
+        def combine(data):
+            return np.mean(data, axis=1)
     elif combine == "std":
-        combine = lambda data: np.std(data, axis=1)  # noqa
+        def combine(data):
+            return np.std(data, axis=1)
     elif combine == "median":
-        combine = lambda data: np.median(data, axis=1)  # noqa
+        def combine(data):
+            return np.median(data, axis=1)
     elif not callable(combine):
         raise ValueError(
             "``combine`` must be None, a callable or one out of 'mean' "
@@ -370,9 +377,8 @@ def _pick_and_combine(epochs, combine, all_picks, all_ch_types, scalings,
             this_data = combine(
                 data[:, picks_, :])[:, np.newaxis, :]
         info = pick_info(epochs.info, [picks_[0]], copy=True)
+        info['projs'] = []
         these_epochs = EpochsArray(this_data.copy(), info, tmin=tmin)
-        d = these_epochs.get_data()  # Why is this necessary?
-        d[:] = this_data  # Without this, the data is all-zeros!
         to_plot_list.append([these_epochs, ch_type, name,
                              type2name.get(name, name) + combine_title])
 
@@ -873,7 +879,8 @@ def plot_epochs_psd(epochs, fmin=0, fmax=np.inf, tmin=None, tmax=None,
                                      normalization=normalization, proj=proj,
                                      n_jobs=n_jobs)
 
-        ylabel = _convert_psds(psds, dB, scalings_list[ii], units_list[ii],
+        ylabel = _convert_psds(psds, dB, 'auto', scalings_list[ii],
+                               units_list[ii],
                                [epochs.ch_names[pi] for pi in picks])
 
         # mean across epochs and channels
@@ -1927,7 +1934,7 @@ def _plot_histogram(params):
     params['histogram'].subplots_adjust(hspace=0.6)
     try:
         params['histogram'].show(warn=False)
-    except:
+    except Exception:
         pass
     if params['fig_proj'] is not None:
         params['fig_proj'].canvas.draw()

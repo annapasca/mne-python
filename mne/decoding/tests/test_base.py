@@ -40,6 +40,7 @@ def _make_data(n_samples=1000, n_features=5, n_targets=3):
     # Define Y latent factors
     np.random.seed(0)
     cov_Y = np.eye(n_targets) * 10 + np.random.rand(n_targets, n_targets)
+    cov_Y = (cov_Y + cov_Y.T) / 2.
     mean_Y = np.random.rand(n_targets)
     Y = np.random.multivariate_normal(mean_Y, cov_Y, size=n_samples)
 
@@ -161,6 +162,9 @@ def test_get_coef():
             lm = LinearModel(Ridge(alpha=1)).fit(X, Y)
             assert_array_almost_equal(A, lm.patterns_.T, decimal=2)
 
+    # Check can pass fitting parameters
+    lm.fit(X, Y, sample_weight=np.ones(len(Y)))
+
 
 @requires_version('sklearn', '0.15')
 def test_linearmodel():
@@ -189,8 +193,8 @@ def test_linearmodel():
 @requires_version('sklearn', '0.18')
 def test_cross_val_multiscore():
     """Test cross_val_multiscore for computing scores on decoding over time."""
-    from sklearn.model_selection import KFold, cross_val_score
-    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
+    from sklearn.linear_model import LogisticRegression, LinearRegression
 
     # compare to cross-val-score
     X = np.random.rand(20, 3)
@@ -227,3 +231,20 @@ def test_cross_val_multiscore():
         clf.fit(X[train], y[train])
         scores_auc_manual.append(clf.score(X[test], y[test]))
     assert_array_equal(scores_auc, scores_auc_manual)
+
+    # indirectly test that cross_val_multiscore rightly detects the type of
+    # estimator and generates a StratifiedKFold for classiers and a KFold
+    # otherwise
+    X = np.random.randn(1000, 3)
+    y = np.r_[np.zeros(500), np.ones(500)]
+    clf = LogisticRegression(random_state=0)
+    reg = LinearRegression()
+    for cross_val in (cross_val_score, cross_val_multiscore):
+        manual = cross_val(clf, X, y, cv=StratifiedKFold(2))
+        auto = cross_val(clf, X, y, cv=2)
+        assert_array_equal(manual, auto)
+        assert_raises(ValueError, cross_val, clf, X, y, cv=KFold(2))
+
+        manual = cross_val(reg, X, y, cv=KFold(2))
+        auto = cross_val(reg, X, y, cv=2)
+        assert_array_equal(manual, auto)

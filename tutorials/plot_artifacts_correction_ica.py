@@ -33,8 +33,8 @@ data_path = sample.data_path()
 raw_fname = data_path + '/MEG/sample/sample_audvis_filt-0-40_raw.fif'
 
 raw = mne.io.read_raw_fif(raw_fname, preload=True)
-# 1Hz high pass is often helpful for fitting ICA
-raw.filter(1., 40., n_jobs=2, fir_design='firwin')
+# 1Hz high pass is often helpful for fitting ICA (already lowpassed @ 40 Hz)
+raw.filter(1., None, n_jobs=1, fir_design='firwin')
 
 picks_meg = mne.pick_types(raw.info, meg=True, eeg=False, eog=False,
                            stim=False, exclude='bads')
@@ -108,19 +108,20 @@ ica.plot_properties(raw, picks=[1, 2], psd_args={'fmax': 35.})
 
 ###############################################################################
 # Instead of opening individual figures with component properties, we can
-# also pass an instance of Raw or Epochs in ``inst`` arument to
+# also pass an instance of Raw or Epochs in ``inst`` argument to
 # ``ica.plot_components``. This would allow us to open component properties
 # interactively by clicking on individual component topomaps. In the notebook
-# this woks only when running matplotlib in interactive mode (``%matplotlib``).
+# this works only when running matplotlib in interactive mode
+# (``%matplotlib``).
 
-# uncomment the code below to test the inteactive mode of plot_components:
+# uncomment the code below to test the interactive mode of plot_components:
 # ica.plot_components(picks=range(10), inst=raw)
 
 ###############################################################################
 # Advanced artifact detection
 # ---------------------------
 #
-# Let's use a more efficient way to find artefacts
+# Let's use a more efficient way to find artifacts
 
 eog_average = create_eog_epochs(raw, reject=dict(mag=5e-12, grad=4000e-13),
                                 picks=picks_meg).average()

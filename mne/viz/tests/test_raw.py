@@ -5,6 +5,7 @@
 import numpy as np
 import os.path as op
 import warnings
+import itertools
 
 from numpy.testing import assert_raises, assert_equal
 
@@ -208,11 +209,13 @@ def test_plot_annotations():
     """Test annotation mode of the plotter."""
     raw = _get_raw()
     raw.info['lowpass'] = 10.
-    _annotation_helper(raw)
+    with warnings.catch_warnings(record=True):  # matplotlib
+        _annotation_helper(raw)
 
     with warnings.catch_warnings(record=True):  # cut off
         raw.annotations = Annotations([42], [1], 'test', raw.info['meas_date'])
-    _annotation_helper(raw)
+    with warnings.catch_warnings(record=True):  # matplotlib
+        _annotation_helper(raw)
 
 
 @requires_version('scipy', '0.10')
@@ -266,7 +269,16 @@ def test_plot_raw_psd():
         raw.plot_psd(spatial_colors=True, average=False)
     # with a flat channel
     raw[5, :] = 0
-    assert_raises(ValueError, raw.plot_psd, average=True)
+    with warnings.catch_warnings(record=True) as w:
+        for dB, estimate in itertools.product((True, False),
+                                              ('power', 'amplitude')):
+            raw.plot_psd(average=True, dB=dB, estimate=estimate)
+    assert_equal(len(w), 4)
+    # test reject_by_annotation
+    raw = _get_raw()
+    raw.annotations = Annotations([1, 5], [3, 3], ['test', 'test'])
+    raw.plot_psd(reject_by_annotation=True)
+    raw.plot_psd(reject_by_annotation=False)
 
 
 def test_plot_sensors():

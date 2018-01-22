@@ -8,6 +8,7 @@ from inspect import isfunction
 from collections import namedtuple
 from copy import deepcopy
 from numbers import Integral
+from time import time
 
 import os
 import json
@@ -243,8 +244,8 @@ class ICA(ContainsMixin):
         if method not in methods:
             raise ValueError('`method` must be "%s". You passed: "%s"' %
                              ('" or "'.join(methods), method))
-        if not check_version('sklearn', '0.12'):
-            raise RuntimeError('the scikit-learn package (version >= 0.12)'
+        if not check_version('sklearn', '0.15'):
+            raise RuntimeError('the scikit-learn package (version >= 0.15) '
                                'is required for ICA')
 
         self.noise_cov = noise_cov
@@ -385,6 +386,7 @@ class ICA(ContainsMixin):
         """
         if isinstance(inst, (BaseRaw, BaseEpochs)):
             _check_for_unsupported_ica_channels(picks, inst.info)
+            t_start = time()
             if isinstance(inst, BaseRaw):
                 self._fit_raw(inst, picks, start, stop, decim, reject, flat,
                               tstep, reject_by_annotation, verbose)
@@ -397,7 +399,8 @@ class ICA(ContainsMixin):
         var = _ica_explained_variance(self, inst)
         var_ord = var.argsort()[::-1]
         _sort_components(self, var_ord, copy=False)
-
+        t_stop = time()
+        logger.info("Fitting ICA took {:.1f}s.".format(t_stop - t_start))
         return self
 
     def _reset(self):
@@ -423,12 +426,12 @@ class ICA(ContainsMixin):
             picks = _pick_data_channels(raw.info, exclude='bads',
                                         with_ref_meg=False)
 
-        logger.info('Fitting ICA to data using %i channels. \n'
-                    'Please be patient, this may take some time' % len(picks))
+        logger.info('Fitting ICA to data using %i channels '
+                    '(please be patient, this may take a while)' % len(picks))
 
         if self.max_pca_components is None:
             self.max_pca_components = len(picks)
-            logger.info('Inferring max_pca_components from picks.')
+            logger.info('Inferring max_pca_components from picks')
 
         self.info = pick_info(raw.info, picks)
         if self.info['comps']:
@@ -466,8 +469,8 @@ class ICA(ContainsMixin):
         if picks is None:
             picks = _pick_data_channels(epochs.info, exclude='bads',
                                         with_ref_meg=False)
-        logger.info('Fitting ICA to data using %i channels. \n'
-                    'Please be patient, this may take some time' % len(picks))
+        logger.info('Fitting ICA to data using %i channels '
+                    '(please be patient, this may take a while)' % len(picks))
 
         # filter out all the channels the raw wouldn't have initialized
         self.info = pick_info(epochs.info, picks)
@@ -477,7 +480,7 @@ class ICA(ContainsMixin):
 
         if self.max_pca_components is None:
             self.max_pca_components = len(picks)
-            logger.info('Inferring max_pca_components from picks.')
+            logger.info('Inferring max_pca_components from picks')
 
         # this should be a copy (picks a list of int)
         data = epochs.get_data()[:, picks]
@@ -660,7 +663,7 @@ class ICA(ContainsMixin):
     def _transform_epochs(self, epochs, concatenate):
         """Aux method."""
         if not hasattr(self, 'mixing_matrix_'):
-            raise RuntimeError('No fit available. Please fit ICA')
+            raise RuntimeError('No fit available. Please fit ICA.')
 
         picks = pick_types(epochs.info, include=self.ch_names, exclude='bads',
                            meg=False, ref_meg=False)
@@ -685,7 +688,7 @@ class ICA(ContainsMixin):
     def _transform_evoked(self, evoked):
         """Aux method."""
         if not hasattr(self, 'mixing_matrix_'):
-            raise RuntimeError('No fit available. Please first fit ICA')
+            raise RuntimeError('No fit available. Please fit ICA.')
 
         picks = pick_types(evoked.info, include=self.ch_names, exclude='bads',
                            meg=False, ref_meg=False)
@@ -1387,7 +1390,7 @@ class ICA(ContainsMixin):
 
         check_fname(fname, 'ICA', ('-ica.fif', '-ica.fif.gz'))
 
-        logger.info('Writing ica solution to %s...' % fname)
+        logger.info('Writing ICA solution to %s...' % fname)
         fid = start_file(fname)
 
         try:
@@ -1551,7 +1554,7 @@ class ICA(ContainsMixin):
         Returns
         -------
         self : instance of ICA
-            The ica object with the detected artifact indices marked for
+            The ICA object with the detected artifact indices marked for
             exclusion
         """
         logger.info('    Searching for artifacts...')
@@ -1885,7 +1888,7 @@ def _write_ica(fid, ica):
 
 
 @verbose
-def read_ica(fname):
+def read_ica(fname, verbose=None):
     """Restore ICA solution from fif file.
 
     Parameters
@@ -1893,6 +1896,9 @@ def read_ica(fname):
     fname : str
         Absolute path to fif file containing ICA matrices.
         The file name should end with -ica.fif or -ica.fif.gz.
+    verbose : bool, str, int, or None
+        If not None, override default verbose level (see :func:`mne.verbose`
+        and :ref:`Logging documentation <tut_logging>` for more).
 
     Returns
     -------
@@ -2184,7 +2190,7 @@ def run_ica(raw, n_components, max_pca_components=100,
     Returns
     -------
     ica : instance of ICA
-        The ica object with detected artifact sources marked for exclusion
+        The ICA object with detected artifact sources marked for exclusion.
     """
     ica = ICA(n_components=n_components, max_pca_components=max_pca_components,
               n_pca_components=n_pca_components, noise_cov=noise_cov,

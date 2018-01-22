@@ -153,9 +153,11 @@ def head_pos_to_trans_rot_t(quats):
 def _get_hpi_info(info, verbose=None):
     """Get HPI information from raw."""
     if len(info['hpi_meas']) == 0 or \
-            ('coil_freq' not in info['hpi_meas'][0]['hpi_coils'][0]):
+            ('coil_freq' not in info['hpi_meas'][0]['hpi_coils'][0]) or \
+            info.get('hpi_subsystem') is None:
         raise RuntimeError('Appropriate cHPI information not found in'
-                           'raw.info["hpi_meas"], cannot process cHPI')
+                           'info["hpi_meas"] and info["hpi_subsystem"], '
+                           'cannot process cHPI')
     hpi_coils = sorted(info['hpi_meas'][-1]['hpi_coils'],
                        key=lambda x: x['number'])  # ascending (info) order
 
@@ -477,11 +479,17 @@ def _fit_cHPI_amplitudes(raw, time_sl, hpi, fit_time, verbose=None):
         sin_fit[fi, :] = vt[0]
 
     data_diff = np.dot(model, X).T - this_data
+    data_diff_sq = np.linalg.norm(data_diff, axis=1)
+    data_diff_sq *= data_diff_sq
 
-    # compute amplitude correlation (For logging)
-    g_sin = 1 - np.sqrt((data_diff**2).sum() / (this_data**2).sum())
-    g_chan = 1 - np.sqrt((data_diff**2).sum(axis=1) /
-                         (this_data**2).sum(axis=1))
+    # compute amplitude correlation (for logging), protect against zero
+    norm = np.linalg.norm(this_data, axis=1)
+    norm *= norm  # sum of squares
+    norm_sum = norm.sum()
+    norm_sum = np.inf if norm_sum == 0 else norm_sum
+    norm[norm == 0] = np.inf
+    g_sin = 1 - np.sqrt(data_diff_sq.sum() / norm_sum)
+    g_chan = 1 - np.sqrt(data_diff_sq / norm)
     logger.debug('    HPI amplitude correlation %0.3f: %0.3f '
                  '(%s chnls > 0.90)' % (fit_time, g_sin,
                                         (g_chan > 0.90).sum()))
