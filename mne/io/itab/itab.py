@@ -12,7 +12,7 @@ from ..base import BaseRaw
 from ..utils import _mult_cal_one
 
 from .mhd import _read_mhd
-from info import _mhd2info
+from .info import _mhd2info
 from .constants import ITAB
 
 class RawITAB(BaseRaw):
