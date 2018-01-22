@@ -7,6 +7,7 @@
 from copy import deepcopy
 from math import sqrt
 import numpy as np
+import os
 from scipy import linalg
 
 from ..io.constants import FIFF
@@ -970,6 +971,8 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
     is_free_ori = (inverse_operator['source_ori'] ==
                    FIFF.FIFFV_MNE_FREE_ORI and pick_ori != 'normal')
 
+    is_mixed = (inverse_operator['source_ori'] == 5 and pick_ori is None)
+
     if buffer_size is not None and is_free_ori:
         # Process the data in segments to conserve memory
         n_seg = int(np.ceil(data.shape[1] / float(buffer_size)))
@@ -993,8 +996,10 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
     else:
         sol = np.dot(K, data)
         if is_free_ori and pick_ori != 'vector':
+
             logger.info('combining the current components...')
             sol = combine_xyz(sol)
+        print('******************** sol dim {}  *********************** \n'.format(sol.shape))
 
     if noise_norm is not None:
         if pick_ori == 'vector' and is_free_ori:
@@ -1062,6 +1067,7 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
 
             if noise_norm is not None:
                 sol *= noise_norm
+
         else:
             # Linear inverse: do computation here or delayed
             if len(sel) < K.shape[0]:
@@ -1229,6 +1235,7 @@ def _prepare_forward(forward, info, noise_cov, pca=False, rank=None,
 def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                           fixed='auto', limit_depth_chs=True, rank=None,
                           use_cps=None, verbose=None):
+
     """Assemble inverse operator.
 
     Parameters
@@ -1365,6 +1372,7 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
         forward = convert_forward_solution(forward, surf_ori=True,
                                            use_cps=use_cps)
 
+
     #
     # 1. Read the bad channels
     # 2. Read the necessary data from the forward solution matrix file
@@ -1419,7 +1427,7 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                        projs=[])
 
     # apply loose orientations
-    if not is_fixed_ori:
+    if not is_fixed_ori and not is_mixed:
         orient_prior = compute_orient_prior(forward, loose=loose)
         source_cov *= orient_prior
         orient_prior = dict(data=orient_prior,
