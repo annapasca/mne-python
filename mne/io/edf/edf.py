@@ -463,6 +463,7 @@ def _get_info(fname, stim_channel, annot, annotmap, eog, misc, exclude,
     for idx, ch_info in enumerate(zip(ch_names, physical_ranges, cals)):
         ch_name, physical_range, cal = ch_info
         chan_info = {}
+        logger.debug('  %s: range=%s cal=%s' % (ch_name, physical_range, cal))
         chan_info['cal'] = cal
         chan_info['logno'] = idx + 1
         chan_info['scanno'] = idx + 1
@@ -539,7 +540,12 @@ def _get_info(fname, stim_channel, annot, annotmap, eog, misc, exclude,
         elif highpass[0] == 'DC':
             info['highpass'] = 0.
         else:
-            info['highpass'] = float(highpass[0])
+            hp = highpass[0]
+            try:
+                hp = float(hp)
+            except Exception:
+                hp = 0.
+            info['highpass'] = hp
     else:
         info['highpass'] = float(np.max(highpass))
         warn('Channels contain different highpass filters. Highest filter '
@@ -609,7 +615,8 @@ def _read_edf_header(fname, annot, annotmap, exclude):
         subtype = os.path.splitext(fname)[1][1:].lower()
 
         n_records = int(fid.read(8).decode())
-        record_length = np.array([float(fid.read(8)), 1.])  # in seconds
+        record_length = fid.read(8).decode().strip('\x00').strip()
+        record_length = np.array([float(record_length), 1.])  # in seconds
         if record_length[0] == 0:
             record_length = record_length[0] = 1.
             warn('Header information is incorrect for record length. Default '
@@ -618,7 +625,7 @@ def _read_edf_header(fname, annot, annotmap, exclude):
         nchan = int(fid.read(4).decode())
         channels = list(range(nchan))
         ch_names = [fid.read(16).strip().decode() for ch in channels]
-        exclude = [ch_names.index(idx) for idx in exclude]
+        exclude = _find_exclude_idx(ch_names, exclude)
         for ch in channels:
             fid.read(80)  # transducer
         units = [fid.read(8).strip().decode() for ch in channels]
@@ -758,7 +765,7 @@ def _read_gdf_header(fname, stim_channel, exclude):
             units = [fid.read(8).decode('latin-1').strip(' \x00')
                      for ch in channels]
 
-            exclude = [ch_names.index(idx) for idx in exclude]
+            exclude = _find_exclude_idx(ch_names, exclude)
             include = list()
             for i, unit in enumerate(units):
                 if unit[:2] == 'uV':
@@ -938,7 +945,7 @@ def _read_gdf_header(fname, stim_channel, exclude):
             channels = list(range(nchan))
             ch_names = [fid.read(16).decode().strip(' \x00')
                         for ch in channels]
-            exclude = [ch_names.index(idx) for idx in exclude]
+            exclude = _find_exclude_idx(ch_names, exclude)
 
             fid.seek(80 * len(channels), 1)  # reserved space
             fid.seek(6 * len(channels), 1)  # phys_dim, obsolete
@@ -1156,6 +1163,15 @@ def _check_stim_channel(stim_channel, ch_names, include):
                              .format(stim_channel, len(ch_names)))
 
     return stim_channel
+
+
+def _find_exclude_idx(ch_names, exclude):
+    """Find the index of all channels to exclude.
+
+    If there are several channels called "A" and we want to exclude "A",
+    then add (the index of) all "A" channels to the exclusion list.
+    """
+    return [idx for idx, ch in enumerate(ch_names) if ch in exclude]
 
 
 def read_raw_edf(input_fname, montage=None, eog=None, misc=None,
