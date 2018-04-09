@@ -114,6 +114,8 @@ Bug
 
 - Fix bug in :func:`mne.io.read_raw_brainvision` to use the correct conversion for filters from time constant to frequency by `Stefan Appelhoff`_
 
+- Fix bug with events when saving split files using :meth:`mne.Epochs.save` by `Eric Larson`_
+
 - Fix bug in :class:`mne.decoding.SlidingEstimator` and :class:`mne.decoding.GeneralizingEstimator` to allow :func:`mne.decoding.cross_val_multiscore` to automatically detect whether the `base_estimator` is a classifier and use a `StratifiedKFold` instead of a `KFold` when `cv` is not specified, by `Jean-Remi King`_
 
 - Fix bug in :func:`mne.set_eeg_reference` to remove an average reference projector when setting the reference to ``[]`` (i.e. do not change the existing reference) by `Clemens Brunner`_
@@ -168,7 +170,11 @@ Bug
 
 - Fix bug in ``mne coreg`` where sphere surfaces were scaled by `Eric Larson`_
 
+- Fix bug in :meth:`mne.Evoked.plot_topomap` when using ``proj='interactive'`` mode by `Eric Larson`_
+
 - Fix bug when passing ``show_sensors=1`` to :func:`mne.viz.plot_compare_evokeds` resulted in sensors legend placed in lower right of the figure (position 4 in matplotlib), not upper right by `Mikołaj Magnuski`_
+
+- Fix handling of annotations when cropping and concatenating raw data by `Alex Gramfort`_ and `Eric Larson`_
 
 - Fix bug in :meth:`mne.io.Raw.plot_psd` when ``picks is not None`` and ``picks`` spans more than one channel type by `Eric Larson`_
 
@@ -178,6 +184,8 @@ API
 ~~~
 
 - Channels with unknown locations are now assigned position ``[np.nan, np.nan, np.nan]`` instead of ``[0., 0., 0.]``, by `Eric Larson`_
+
+- :meth:`mne.Evoked.plot` will now append the number of epochs averaged for the evoked data in the first plot title, by `Eric Larson`_
 
 - Changed the line width in :func:`mne.viz.plot_bem` from 2.0 to 1.0 for better visibility of underlying structures, by `Eric Larson`_
 
@@ -190,6 +198,8 @@ API
 - ``mne.time_frequency.csd_array`` has been refactored into :func:`mne.time_frequency.csd_array_fourier` and :func:`mne.time_frequency.csd_array_multitaper`, by `Marijn van Vliet`_
 
 - Added ``clean_names=False`` parameter to :func:`mne.io.read_raw_ctf` for control over cleaning of main channel names and compensation channel names from CTF suffixes by `Oleh Kozynets`_
+
+- The functions ``lcmv``, ``lcmv_epochs``, and ``lcmv_raw`` are now deprecated in favor of :func:`mne.beamformer.make_lcmv` and :func:`mne.beamformer.apply_lcmv`, :func:`mne.beamformer.apply_lcmv_epochs`, and :func:`mne.beamformer.apply_lcmv_raw`, by `Britta Westner`_  
 
 .. _changes_0_15:
 
