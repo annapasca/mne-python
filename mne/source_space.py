@@ -33,7 +33,8 @@ from .utils import (get_subjects_dir, run_subprocess, has_freesurfer,
 from .parallel import parallel_func, check_n_jobs
 from .transforms import (invert_transform, apply_trans, _print_coord_trans,
                          combine_transforms, _get_trans,
-                         _coord_frame_name, Transform, _str_to_frame)
+                         _coord_frame_name, Transform, _str_to_frame,
+                         _ensure_trans)
 from .externals.six import string_types
 
 
@@ -1179,7 +1180,7 @@ def vertex_to_mni(vertices, hemis, subject, subjects_dir=None, mode=None,
     # take point locations in MRI space and convert to MNI coordinates
     xfm = _read_talxfm(subject, subjects_dir, mode)
     data = np.array([rr[h][v, :] for h, v in zip(hemis, vertices)])
-    return apply_trans(xfm['trans'], data), xfm
+    return apply_trans(xfm['trans'], data)
 
 
 ##############################################################################
@@ -1187,44 +1188,44 @@ def vertex_to_mni(vertices, hemis, subject, subjects_dir=None, mode=None,
 
 
 @verbose
-def aseg_vertex_to_mni(vertices, subject, subjects_dir=None, mode=None,
-                       verbose=None):
-    """Convert the array of vertices for a hemisphere to MNI coordinates.
+def head_to_mni(pos, subject, mri_head_t, subjects_dir=None,
+                verbose=None):
+    """Convert pos from head coordinate system to MNI ones.
+
     Parameters
     ----------
-    vertices : int, or list of int
-        Vertex number(s) to convert
+    pos : array, shape (n_pos, 3)
+        The  coordinates (in m) in head coordinate system
     subject : string
-        Name of the subject to load surfaces from.
+        Name of the subject.
+    mri_head_t: instance of Transform
+        MRI<->Head coordinate transformation
     subjects_dir : string, or None
         Path to SUBJECTS_DIR if it is not set in the environment.
-    mode : string | None
-        Either 'nibabel' or 'freesurfer' for the software to use to
-        obtain the transforms. If None, 'nibabel' is tried first, falling
-        back to 'freesurfer' if it fails. Results should be equivalent with
-        either option, but nibabel may be quicker (and more pythonic).
     verbose : bool, str, int, or None
         If not None, override default verbose level (see :func:`mne.verbose`
         and :ref:`Logging documentation <tut_logging>` for more).
+
     Returns
     -------
-    coordinates : n_vertices x 3 array of float
-        The MNI coordinates (in mm) of the vertices
+    coordinates : array, shape (n_pos, 3)
+        The MNI coordinates (in mm) of pos
+
     Notes
     -----
     This function requires either nibabel (in Python) or Freesurfer
     (with utility "mri_info") to be correctly installed.
     """
-    if not has_freesurfer() and not has_nibabel():
-        raise RuntimeError('NiBabel (Python) or Freesurfer (Unix) must be '
-                           'correctly installed and accessible from Python')
 
-    if not isinstance(vertices, list) and not isinstance(vertices, np.ndarray):
-        vertices = [vertices]
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
 
-    # take point locations in MRI space and convert to MNI coordinates
-    xfm = _read_talxfm(subject, subjects_dir, mode)
-    return apply_trans(xfm['trans'], vertices), xfm
+    # before we go from head to MRI (surface RAS)
+    head_mri_t = _ensure_trans(mri_head_t, 'head', 'mri')
+    coo_MRI_RAS = apply_trans(head_mri_t, pos)
+
+    # convert to MNI coordinates
+    xfm = _read_talxfm(subject, subjects_dir)
+    return apply_trans(xfm['trans'], coo_MRI_RAS * 1000)
 
 
 @verbose
@@ -2533,7 +2534,7 @@ def get_volume_labels_from_src(src, subject, subjects_dir):
         roi_str = src[nr]['seg_name']
         try:
             ind = all_labels_aseg[0].index(roi_str)
-            color = tuple(np.array(all_labels_aseg[1][ind]) / 255.)
+            color = np.array(all_labels_aseg[1][ind]) / 255
         except ValueError:
             pass
 
