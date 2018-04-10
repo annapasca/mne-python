@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Authors: Mainak Jas <mainak@neuro.hut.fi>
 #          Teon Brooks <teon.brooks@gmail.com>
 #
@@ -9,15 +10,17 @@ import os.path as op
 import shutil
 import warnings
 
+import numpy as np
 from nose.tools import assert_true, assert_equal, assert_raises
+import pytest
 
 from mne import Epochs, read_events, read_evokeds
 from mne.io import read_raw_fif
 from mne.datasets import testing
 from mne.report import Report
 from mne.utils import (_TempDir, requires_mayavi, requires_nibabel,
-                       requires_PIL, run_tests_if_main, slow_test)
-from mne.viz import plot_trans
+                       run_tests_if_main, traits_test)
+from mne.viz import plot_alignment
 
 import matplotlib
 matplotlib.use('Agg')  # for testing don't use X server
@@ -26,6 +29,7 @@ data_dir = testing.data_path(download=False)
 subjects_dir = op.join(data_dir, 'subjects')
 report_dir = op.join(data_dir, 'MEG', 'sample')
 raw_fname = op.join(report_dir, 'sample_audvis_trunc_raw.fif')
+ms_fname = op.join(data_dir, 'SSS', 'test_move_anon_raw.fif')
 event_fname = op.join(report_dir, 'sample_audvis_trunc_raw-eve.fif')
 cov_fname = op.join(report_dir, 'sample_audvis_trunc-cov.fif')
 fwd_fname = op.join(report_dir, 'sample_audvis_trunc-meg-eeg-oct-6-fwd.fif')
@@ -43,18 +47,19 @@ evoked_fname = op.join(base_dir, 'test-ave.fif')
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
 
-@slow_test
+@pytest.mark.slowtest
 @testing.requires_testing_data
-@requires_PIL
 def test_render_report():
     """Test rendering -*.fif files for mne report."""
     tempdir = _TempDir()
     raw_fname_new = op.join(tempdir, 'temp_raw.fif')
+    ms_fname_new = op.join(tempdir, 'temp_ms_raw.fif')
     event_fname_new = op.join(tempdir, 'temp_raw-eve.fif')
     cov_fname_new = op.join(tempdir, 'temp_raw-cov.fif')
     fwd_fname_new = op.join(tempdir, 'temp_raw-fwd.fif')
     inv_fname_new = op.join(tempdir, 'temp_raw-inv.fif')
     for a, b in [[raw_fname, raw_fname_new],
+                 [ms_fname, ms_fname_new],
                  [event_fname, event_fname_new],
                  [cov_fname, cov_fname_new],
                  [fwd_fname, fwd_fname_new],
@@ -67,6 +72,7 @@ def test_render_report():
     # Speed it up by picking channels
     raw = read_raw_fif(raw_fname_new, preload=True)
     raw.pick_channels(['MEG 0111', 'MEG 0121'])
+    raw.del_proj()
     epochs = Epochs(raw, read_events(event_fname), 1, -0.2, 0.2)
     epochs.save(epochs_fname)
     # This can take forever (stall Travis), so let's make it fast
@@ -93,8 +99,12 @@ def test_render_report():
 
     # Check saving functionality
     report.data_path = tempdir
-    report.save(fname=op.join(tempdir, 'report.html'), open_browser=False)
-    assert_true(op.isfile(op.join(tempdir, 'report.html')))
+    fname = op.join(tempdir, 'report.html')
+    report.save(fname=fname, open_browser=False)
+    assert_true(op.isfile(fname))
+    with open(fname, 'rb') as fid:
+        html = fid.read().decode('utf-8')
+    assert '(MaxShield on)' in html
 
     assert_equal(len(report.html), len(fnames))
     assert_equal(len(report.html), len(report.fnames))
@@ -123,13 +133,25 @@ def test_render_report():
                     [op.basename(x) for x in report.fnames])
         assert_true(''.join(report.html).find(op.basename(fname)) != -1)
 
+    assert_raises(ValueError, Report, image_format='foo')
+    assert_raises(ValueError, Report, image_format=None)
+
+    # SVG rendering
+    report = Report(info_fname=raw_fname_new, subjects_dir=subjects_dir,
+                    image_format='svg')
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        report.parse_folder(data_path=tempdir, on_error='raise')
+
+    # ndarray support smoke test
+    report.add_figs_to_section(np.zeros((2, 3, 3)), 'caption', 'section')
+
 
 @testing.requires_testing_data
 @requires_mayavi
-@requires_PIL
+@traits_test
 def test_render_add_sections():
     """Test adding figures/images to section."""
-    from PIL import Image
     tempdir = _TempDir()
     import matplotlib.pyplot as plt
     report = Report(subjects_dir=subjects_dir)
@@ -147,15 +169,12 @@ def test_render_add_sections():
     # need to recreate because calls above change size
     fig = plt.plot([1, 2], [1, 2])[0].figure
 
-    # Check add_images_to_section with png and then gif
+    # Check add_images_to_section with png
     img_fname = op.join(tempdir, 'testimage.png')
     fig.savefig(img_fname)
     report.add_images_to_section(fnames=[img_fname],
                                  captions=['evoked response'])
 
-    im = Image.open(img_fname)
-    op.join(tempdir, 'testimage.gif')
-    im.save(img_fname)  # matplotlib does not support gif
     report.add_images_to_section(fnames=[img_fname],
                                  captions=['evoked response'])
 
@@ -167,17 +186,18 @@ def test_render_add_sections():
 
     evoked = read_evokeds(evoked_fname, condition='Left Auditory',
                           baseline=(-0.2, 0.0))
-    fig = plot_trans(evoked.info, trans_fname, subject='sample',
-                     subjects_dir=subjects_dir)
+    fig = plot_alignment(evoked.info, trans_fname, subject='sample',
+                         subjects_dir=subjects_dir)
 
     report.add_figs_to_section(figs=fig,  # test non-list input
                                captions='random image', scale=1.2)
     assert_true(repr(report))
 
 
-@slow_test
+@pytest.mark.slowtest
 @testing.requires_testing_data
 @requires_mayavi
+@traits_test
 @requires_nibabel()
 def test_render_mri():
     """Test rendering MRI for mne report."""
@@ -248,6 +268,14 @@ def test_add_slider_to_section():
                   [figs, figs])
     assert_raises(ValueError, report.add_slider_to_section, figs, ['wug'])
     assert_raises(TypeError, report.add_slider_to_section, figs, 'wug')
+    # need at least 2
+    assert_raises(ValueError, report.add_slider_to_section, figs[:1], 'wug')
+
+    # Smoke test that SVG w/unicode can be added
+    report = Report()
+    fig, ax = plt.subplots()
+    ax.set_xlabel(u'μ')
+    report.add_slider_to_section([fig] * 2, image_format='svg')
 
 
 def test_validate_input():

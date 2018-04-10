@@ -26,7 +26,7 @@ from os import path as op
 
 import mne
 from mne.viz import ClickableImage  # noqa
-from mne.viz import plot_trans, snapshot_brain_montage
+from mne.viz import plot_alignment, snapshot_brain_montage
 
 
 print(__doc__)
@@ -47,7 +47,7 @@ layout_name = 'custom_layout.lout'
 
 mat = loadmat(path_data)
 ch_names = mat['ch_names'].tolist()
-elec = mat['elec']
+elec = mat['elec']  # electrode coordinates in meters
 dig_ch_pos = dict(zip(ch_names, elec))
 mon = mne.channels.DigMontage(dig_ch_pos=dig_ch_pos)
 info = mne.create_info(ch_names, 1000., 'ecog', montage=mon)
@@ -60,9 +60,10 @@ print('Created %s channel positions' % len(ch_names))
 # Because we have the 3D location of each electrode, we can use the
 # :func:`mne.viz.snapshot_brain_montage` function to return a 2D image along
 # with the electrode positions on that image. We use this in conjunction with
-# :func:`mne.viz.plot_trans`, which visualizes electrode positions.
+# :func:`mne.viz.plot_alignment`, which visualizes electrode positions.
 
-fig = plot_trans(info, trans=None, subject='sample', subjects_dir=subjects_dir)
+fig = plot_alignment(info, subject='sample', subjects_dir=subjects_dir,
+                     surfaces=['pial'], meg=False)
 mlab.view(200, 70)
 xy, im = snapshot_brain_montage(fig, mon)
 

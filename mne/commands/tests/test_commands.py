@@ -4,6 +4,7 @@ from os import path as op
 import shutil
 import glob
 import warnings
+import pytest
 from nose.tools import assert_true, assert_raises
 from numpy.testing import assert_equal, assert_allclose
 
@@ -17,9 +18,9 @@ from mne.commands import (mne_browse_raw, mne_bti2fiff, mne_clean_eog_ecg,
                           mne_show_info)
 from mne.datasets import testing, sample
 from mne.io import read_raw_fif
-from mne.utils import (run_tests_if_main, _TempDir, requires_mne, requires_PIL,
+from mne.utils import (run_tests_if_main, _TempDir, requires_mne,
                        requires_mayavi, requires_tvtk, requires_freesurfer,
-                       ArgvSetter, slow_test, ultra_slow_test)
+                       traits_test, ArgvSetter)
 
 
 base_dir = op.join(op.dirname(__file__), '..', '..', 'io', 'tests', 'data')
@@ -41,10 +42,12 @@ def check_usage(module, force_help=False):
         assert_true('Usage: ' in out.stdout.getvalue())
 
 
-@slow_test
+@pytest.mark.slowtest
 def test_browse_raw():
     """Test mne browse_raw."""
     check_usage(mne_browse_raw)
+    with ArgvSetter(('--raw', raw_fname)):
+        mne_browse_raw.run()
 
 
 def test_bti2fiff():
@@ -84,7 +87,7 @@ def test_clean_eog_ecg():
     assert_true(len(fnames) == 3)  # raw plus two projs
 
 
-@slow_test
+@pytest.mark.slowtest
 def test_compute_proj_ecg_eog():
     """Test mne compute_proj_ecg/eog."""
     for fun in (mne_compute_proj_ecg, mne_compute_proj_eog):
@@ -97,7 +100,8 @@ def test_compute_proj_ecg_eog():
         shutil.copyfile(raw_fname, use_fname)
         with ArgvSetter(('-i', use_fname, '--bad=' + bad_fname,
                          '--rej-eeg', '150')):
-            fun.run()
+            with warnings.catch_warnings(record=True):  # too few samples
+                fun.run()
         fnames = glob.glob(op.join(tempdir, '*proj.fif'))
         assert_true(len(fnames) == 1)
         fnames = glob.glob(op.join(tempdir, '*-eve.fif'))
@@ -177,9 +181,9 @@ def test_maxfilter():
             assert_true(check in out.stdout.getvalue(), check)
 
 
-@slow_test
+@pytest.mark.slowtest
 @requires_mayavi
-@requires_PIL
+@traits_test
 @testing.requires_testing_data
 def test_report():
     """Test mne report."""
@@ -199,7 +203,8 @@ def test_surf2bem():
     check_usage(mne_surf2bem)
 
 
-@ultra_slow_test
+@pytest.mark.slowtest
+@pytest.mark.ultraslowtest
 @requires_freesurfer
 @testing.requires_testing_data
 def test_watershed_bem():
@@ -223,7 +228,8 @@ def test_watershed_bem():
         mne_watershed_bem.run()
 
 
-@ultra_slow_test
+@pytest.mark.slowtest
+@pytest.mark.ultraslowtest
 @requires_freesurfer
 @sample.requires_sample_data
 def test_flash_bem():

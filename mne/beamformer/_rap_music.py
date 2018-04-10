@@ -168,7 +168,7 @@ def _compute_subcorr(G, phi_sig):
     # in G and handle the fact that it might be rank defficient
     # eg. when using MEG and a sphere model for which the
     # radial component will be truly 0.
-    rank = np.sum(Sg > (Sg[0] * 1e-12))
+    rank = np.sum(Sg > (Sg[0] * 1e-6))
     if rank == 0:
         return 0, np.zeros(len(G))
     rank = max(rank, 2)  # rank cannot be 1
@@ -187,7 +187,7 @@ def _compute_proj(A):
 
 @verbose
 def rap_music(evoked, forward, noise_cov, n_dipoles=5, return_residual=False,
-              picks=None, verbose=None):
+              verbose=None):
     """RAP-MUSIC source localization method.
 
     Compute Recursively Applied and Projected MUltiple SIgnal Classification
@@ -208,9 +208,6 @@ def rap_music(evoked, forward, noise_cov, n_dipoles=5, return_residual=False,
         The number of dipoles to look for. The default value is 5.
     return_residual : bool
         If True, the residual is returned as an Evoked instance.
-    picks : array-like of int | None
-        Indices (in info) of data channels. If None, MEG and EEG data channels
-        (without bad channels) will be used.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see :func:`mne.verbose`
         and :ref:`Logging documentation <tut_logging>` for more).
@@ -234,7 +231,7 @@ def rap_music(evoked, forward, noise_cov, n_dipoles=5, return_residual=False,
         J.C. Mosher and R.M. Leahy. 1999. Source localization using recursively
         applied and projected (RAP) MUSIC. Signal Processing, IEEE Trans. 47, 2
         (February 1999), 332-340.
-        DOI=10.1109/78.740118 http://dx.doi.org/10.1109/78.740118
+        DOI=10.1109/78.740118 https://doi.org/10.1109/78.740118
 
         Mosher, J.C.; Leahy, R.M., EEG and MEG source localization using
         recursively applied (RAP) MUSIC, Signals, Systems and Computers, 1996.
@@ -247,7 +244,7 @@ def rap_music(evoked, forward, noise_cov, n_dipoles=5, return_residual=False,
     data = evoked.data
     times = evoked.times
 
-    picks = _setup_picks(picks, info, forward, noise_cov)
+    picks = _setup_picks(info, forward, data_cov=None, noise_cov=noise_cov)
 
     data = data[picks]
 

@@ -20,10 +20,10 @@ from ..utils import get_config, set_config, logger
 from mayavi.core.ui.mayavi_scene import MayaviScene
 from mayavi.tools.mlab_scene_model import MlabSceneModel
 from pyface.api import (confirm, error, FileDialog, OK, YES, information,
-                        ProgressDialog)
+                        ProgressDialog, warning)
 from traits.api import (HasTraits, HasPrivateTraits, cached_property, Instance,
                         Property, Bool, Button, Enum, File, Float, Int, List,
-                        Str, Array, DelegatesTo)
+                        Str, Array, DelegatesTo, on_trait_change)
 from traits.trait_base import ETSConfig
 from traitsui.api import (View, Item, HGroup, VGroup, spring, TextEditor,
                           CheckListEditor, EnumEditor, Handler)
@@ -31,7 +31,8 @@ from traitsui.menu import NoButtons
 from tvtk.pyface.scene_editor import SceneEditor
 
 from ..io.constants import FIFF
-from ..io.kit.kit import RawKIT, KIT, _make_stim_channel, _default_stim_chs
+from ..io.kit.kit import (RawKIT, KIT, _make_stim_channel, _default_stim_chs,
+                          UnsupportedKITFormat)
 from ..transforms import (apply_trans, als_ras_trans,
                           get_ras_to_neuromag_trans, Transform)
 from ..coreg import _decimate_points, fit_matched_points
@@ -73,6 +74,7 @@ class Kit2FiffModel(HasPrivateTraits):
     # Input Traits
     markers = Instance(CombineMarkersModel, ())
     sqd_file = File(exists=True, filter=kit_con_wildcard)
+    allow_unknown_format = Bool(False)
     hsp_file = File(exists=True, filter=hsp_wildcard)
     fid_file = File(exists=True, filter=elp_wildcard)
     stim_coding = Enum(">", "<", "channel")
@@ -308,7 +310,18 @@ class Kit2FiffModel(HasPrivateTraits):
         if not self.sqd_file:
             return
         try:
-            return RawKIT(self.sqd_file, stim=None)
+            return RawKIT(self.sqd_file, stim=None,
+                          allow_unknown_format=self.allow_unknown_format)
+        except UnsupportedKITFormat as exception:
+            warning(
+                None,
+                "The selected SQD file is written in an old file format (%s) "
+                "that is not officially supported. Confirm that the results "
+                "are as expected. This warning is displayed only once per "
+                "session." % (exception.sqd_version,),
+                "Unsupported SQD File Format")
+            self.allow_unknown_format = True
+            return self._get_raw()
         except Exception as err:
             self.reset_traits(['sqd_file'])
             if self.show_gui:
@@ -335,7 +348,7 @@ class Kit2FiffModel(HasPrivateTraits):
                 picks = eval("r_[%s]" % self.stim_chs, vars(np))
                 if picks.dtype.kind != 'i':
                     raise TypeError("Need array of int")
-            except:
+            except Exception:
                 return None
 
         if self.stim_coding == '<':  # Big-endian
@@ -563,17 +576,34 @@ class Kit2FiffPanel(HasPrivateTraits):
         # setup mayavi visualization
         self.fid_obj = PointObject(scene=self.scene, color=(0.1, 1., 0.1),
                                    point_scale=5e-3, name='Fiducials')
+        self._update_fid()
         self.elp_obj = PointObject(scene=self.scene,
                                    color=(0.196, 0.196, 0.863),
                                    point_scale=1e-2, opacity=.2, name='ELP')
+        self._update_elp()
         self.hsp_obj = PointObject(scene=self.scene, color=(0.784,) * 3,
                                    point_scale=2e-3, name='HSP')
-        for name in ('fid', 'elp', 'hsp'):
-            obj = getattr(self, name + '_obj')
-            self.model.sync_trait(name, obj, 'points', mutual=False)
-            self.model.sync_trait('head_dev_trans', obj, 'trans', mutual=False)
+        self._update_hsp()
         self.scene.camera.parallel_scale = 0.15
         self.scene.mlab.view(0, 0, .15)
+
+    @on_trait_change('model:fid,model:head_dev_trans')
+    def _update_fid(self):
+        if self.fid_obj is not None:
+            self.fid_obj.points = apply_trans(self.model.head_dev_trans,
+                                              self.model.fid)
+
+    @on_trait_change('model:hsp,model:head_dev_trans')
+    def _update_hsp(self):
+        if self.hsp_obj is not None:
+            self.hsp_obj.points = apply_trans(self.model.head_dev_trans,
+                                              self.model.hsp)
+
+    @on_trait_change('model:elp,model:head_dev_trans')
+    def _update_elp(self):
+        if self.elp_obj is not None:
+            self.elp_obj.points = apply_trans(self.model.head_dev_trans,
+                                              self.model.elp)
 
     def _clear_all_fired(self):
         self.model.clear_all()

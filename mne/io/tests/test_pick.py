@@ -8,7 +8,8 @@ import numpy as np
 
 from mne import (pick_channels_regexp, pick_types, Epochs,
                  read_forward_solution, rename_channels,
-                 pick_info, pick_channels, __file__, create_info)
+                 pick_info, pick_channels, create_info)
+from mne import __file__ as _root_init_fname
 from mne.io import (read_raw_fif, RawArray, read_raw_bti, read_raw_kit,
                     read_info)
 from mne.io.pick import (channel_indices_by_type, channel_type,
@@ -84,8 +85,7 @@ def test_pick_refs():
 
 
 def test_pick_channels_regexp():
-    """Test pick with regular expression
-    """
+    """Test pick with regular expression."""
     ch_names = ['MEG 2331', 'MEG 2332', 'MEG 2333']
     assert_array_equal(pick_channels_regexp(ch_names, 'MEG ...1'), [0])
     assert_array_equal(pick_channels_regexp(ch_names, 'MEG ...[2-3]'), [1, 2])
@@ -93,8 +93,7 @@ def test_pick_channels_regexp():
 
 
 def test_pick_seeg_ecog():
-    """Test picking with sEEG and ECoG
-    """
+    """Test picking with sEEG and ECoG."""
     names = 'A1 A2 Fz O OTp1 OTp2 E1 OTp3 E2 E3'.split()
     types = 'mag mag eeg eeg seeg seeg ecog seeg ecog ecog'.split()
     info = create_info(names, 1024., types)
@@ -120,8 +119,7 @@ def test_pick_seeg_ecog():
 
 
 def test_pick_chpi():
-    """Test picking cHPI
-    """
+    """Test picking cHPI."""
     # Make sure we don't mis-classify cHPI channels
     info = read_info(op.join(io_dir, 'tests', 'data', 'test_chpi_raw_sss.fif'))
     channel_types = set([channel_type(info, idx)
@@ -254,11 +252,16 @@ def test_picks_by_channels():
     # pick_types type check
     assert_raises(ValueError, raw.pick_types, eeg='string')
 
+    # duplicate check
+    names = ['MEG 002', 'MEG 002']
+    assert len(pick_channels(raw.info['ch_names'], names)) == 1
+    assert len(raw.copy().pick_channels(names)[0][0]) == 1
+
 
 def test_clean_info_bads():
     """Test cleaning info['bads'] when bad_channels are excluded."""
 
-    raw_file = op.join(op.dirname(__file__), 'io', 'tests', 'data',
+    raw_file = op.join(op.dirname(_root_init_fname), 'io', 'tests', 'data',
                        'test_raw.fif')
     raw = read_raw_fif(raw_file)
 

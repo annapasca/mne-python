@@ -5,11 +5,13 @@
 import numpy as np
 import os.path as op
 import warnings
+import itertools
 
 from numpy.testing import assert_raises, assert_equal
 
 from mne import read_events, pick_types, Annotations
-from mne.io import read_raw_fif
+from mne.datasets import testing
+from mne.io import read_raw_fif, read_raw_ctf
 from mne.utils import requires_version, run_tests_if_main
 from mne.viz.utils import _fake_click, _annotation_radio_clicked
 from mne.viz import plot_raw, plot_sensors
@@ -20,9 +22,13 @@ matplotlib.use('Agg')  # for testing don't use X server
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
+ctf_dir = op.join(testing.data_path(download=False), 'CTF')
+ctf_fname_continuous = op.join(ctf_dir, 'testdata_ctf.ds')
+
 base_dir = op.join(op.dirname(__file__), '..', '..', 'io', 'tests', 'data')
 raw_fname = op.join(base_dir, 'test_raw.fif')
 event_name = op.join(base_dir, 'test-eve.fif')
+cov_fname = op.join(base_dir, 'test-cov.fif')
 
 
 def _get_raw():
@@ -81,7 +87,7 @@ def _annotation_helper(raw):
     assert_equal(len(raw.annotations.onset), n_anns + 1)
     assert_equal(len(raw.annotations.duration), n_anns + 1)
     assert_equal(len(raw.annotations.description), n_anns + 1)
-    assert_equal(raw.annotations.description[n_anns], 'BAD test')
+    assert_equal(raw.annotations.description[n_anns], 'BAD_ test')
 
     # draw another annotation merging the two
     _fake_click(fig, data_ax, [5.5, 1.], xform='data', button=1, kind='press')
@@ -101,6 +107,7 @@ def test_plot_raw():
     """Test plotting of raw data."""
     import matplotlib.pyplot as plt
     raw = _get_raw()
+    raw.info['lowpass'] = 10.  # allow heavy decim during plotting
     events = _get_events()
     plt.close('all')  # ensure all are closed
     with warnings.catch_warnings(record=True):
@@ -189,13 +196,36 @@ def test_plot_raw():
         plt.close('all')
 
 
+@testing.requires_testing_data
+def test_plot_raw_white():
+    """Test plotting whitened raw data."""
+    import matplotlib.pyplot as plt
+    raw = read_raw_fif(raw_fname).crop(0, 1).load_data()
+    raw.plot(noise_cov=cov_fname)
+    plt.close('all')
+
+
+@testing.requires_testing_data
+def test_plot_ref_meg():
+    """Test plotting ref_meg."""
+    import matplotlib.pyplot as plt
+    raw_ctf = read_raw_ctf(ctf_fname_continuous).crop(0, 1).load_data()
+    raw_ctf.plot()
+    plt.close('all')
+    assert_raises(ValueError, raw_ctf.plot, group_by='selection')
+
+
 def test_plot_annotations():
     """Test annotation mode of the plotter."""
     raw = _get_raw()
-    _annotation_helper(raw)
+    raw.info['lowpass'] = 10.
+    with warnings.catch_warnings(record=True):  # matplotlib
+        _annotation_helper(raw)
 
-    raw.annotations = Annotations([42], [1], 'test', raw.info['meas_date'])
-    _annotation_helper(raw)
+    with warnings.catch_warnings(record=True):  # cut off
+        raw.annotations = Annotations([42], [1], 'test', raw.info['meas_date'])
+    with warnings.catch_warnings(record=True):  # matplotlib
+        _annotation_helper(raw)
 
 
 @requires_version('scipy', '0.10')
@@ -218,7 +248,7 @@ def test_plot_raw_psd():
     import matplotlib.pyplot as plt
     raw = _get_raw()
     # normal mode
-    raw.plot_psd()
+    raw.plot_psd(average=False)
     # specific mode
     picks = pick_types(raw.info, meg='mag', eeg=False)[:4]
     raw.plot_psd(tmax=np.inf, picks=picks, area_mode='range', average=False,
@@ -228,14 +258,15 @@ def test_plot_raw_psd():
     plt.close('all')
     ax = plt.axes()
     # if ax is supplied:
-    assert_raises(ValueError, raw.plot_psd, ax=ax)
+    assert_raises(ValueError, raw.plot_psd, ax=ax, average=True)
     assert_raises(ValueError, raw.plot_psd, average=True, spatial_colors=True)
-    raw.plot_psd(tmax=np.inf, picks=picks, ax=ax)
+    raw.plot_psd(tmax=np.inf, picks=picks, ax=ax, average=True)
     plt.close('all')
     ax = plt.axes()
-    assert_raises(ValueError, raw.plot_psd, ax=ax)
-    ax = [ax, plt.axes()]
-    raw.plot_psd(tmax=np.inf, ax=ax)
+    assert_raises(ValueError, raw.plot_psd, ax=ax, average=True)
+    plt.close('all')
+    ax = plt.subplots(2)[1]
+    raw.plot_psd(tmax=np.inf, ax=ax, average=True)
     plt.close('all')
     # topo psd
     ax = plt.subplot()
@@ -248,7 +279,23 @@ def test_plot_raw_psd():
         raw.plot_psd(spatial_colors=True, average=False)
     # with a flat channel
     raw[5, :] = 0
-    assert_raises(ValueError, raw.plot_psd)
+    with warnings.catch_warnings(record=True) as w:
+        for dB, estimate in itertools.product((True, False),
+                                              ('power', 'amplitude')):
+            raw.plot_psd(average=True, dB=dB, estimate=estimate)
+    assert_equal(len(w), 4)
+    # test reject_by_annotation
+    raw = _get_raw()
+    raw.annotations = Annotations([1, 5], [3, 3], ['test', 'test'])
+    raw.plot_psd(reject_by_annotation=True)
+    raw.plot_psd(reject_by_annotation=False)
+
+    # gh-5046
+    raw = read_raw_fif(raw_fname, preload=True).crop(0, 1)
+    picks = pick_types(raw.info)
+    raw.plot_psd(picks=picks, average=False)
+    raw.plot_psd(picks=picks, average=True)
+    plt.close('all')
 
 
 def test_plot_sensors():
@@ -259,6 +306,7 @@ def test_plot_sensors():
     _fake_click(fig, fig.gca(), (-0.08, 0.67))
     raw.plot_sensors('topomap', ch_type='mag',
                      show_names=['MEG 0111', 'MEG 0131'])
+    plt.close('all')
     ax = plt.subplot(111)
     raw.plot_sensors(ch_groups='position', axes=ax)
     raw.plot_sensors(ch_groups='selection', to_sphere=False)
@@ -289,5 +337,6 @@ def test_plot_sensors():
     _fake_click(fig, ax, (-0.09, -0.43), xform='data')  # deselect
     assert_equal(len(fig.lasso.selection), 1)
     plt.close('all')
+
 
 run_tests_if_main()

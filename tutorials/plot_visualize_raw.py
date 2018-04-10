@@ -1,6 +1,4 @@
 """
-.. _tut_viz_raw:
-
 Visualize Raw data
 ==================
 
@@ -11,9 +9,9 @@ import numpy as np
 import mne
 
 data_path = op.join(mne.datasets.sample.data_path(), 'MEG', 'sample')
-raw = mne.io.read_raw_fif(op.join(data_path, 'sample_audvis_raw.fif'))
-raw.set_eeg_reference()  # set EEG average reference
-events = mne.read_events(op.join(data_path, 'sample_audvis_raw-eve.fif'))
+raw = mne.io.read_raw_fif(op.join(data_path, 'sample_audvis_raw.fif'),
+                          preload=True)
+raw.set_eeg_reference('average', projection=True)  # set EEG average reference
 
 ###############################################################################
 # The visualization module (:mod:`mne.viz`) contains all the plotting functions
@@ -25,7 +23,7 @@ events = mne.read_events(op.join(data_path, 'sample_audvis_raw-eve.fif'))
 #
 # To visually inspect your raw data, you can use the python equivalent of
 # ``mne_browse_raw``.
-raw.plot(block=True)
+raw.plot(block=True, lowpass=40)
 
 ###############################################################################
 # The channels are color coded by channel type. Generally MEG channels are
@@ -78,10 +76,18 @@ raw.plot(block=True)
 raw.plot(butterfly=True, group_by='position')
 
 ###############################################################################
-# We read the events from a file and passed it as a parameter when calling the
-# method. The events are plotted as vertical lines so you can see how they
-# align with the raw data.
+# We can read events from a file (or extract them from the trigger channel)
+# and pass them as a parameter when calling the method. The events are plotted
+# as vertical lines so you can see how they align with the raw data.
 #
+# We can also pass a corresponding "event_id" to transform the event
+# trigger integers to strings.
+
+events = mne.read_events(op.join(data_path, 'sample_audvis_raw-eve.fif'))
+event_id = {'A/L': 1, 'A/R': 2, 'V/L': 3, 'V/R': 4, 'S': 5, 'B': 32}
+raw.plot(butterfly=True, events=events, event_id=event_id)
+
+###############################################################################
 # We can check where the channels reside with ``plot_sensors``. Notice that
 # this method (along with many other MNE plotting functions) is callable using
 # any MNE data container where the channel information is available.

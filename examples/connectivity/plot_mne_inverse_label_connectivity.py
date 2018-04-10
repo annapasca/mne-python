@@ -149,7 +149,6 @@ plot_connectivity_circle(con_res['pli'], label_names, n_lines=300,
                          node_angles=node_angles, node_colors=label_colors,
                          title='All-to-All Connectivity left-Auditory '
                                'Condition (PLI)')
-plt.savefig('circle.png', facecolor='black')
 
 ###############################################################################
 # Make two connectivity plots in the same figure
@@ -167,3 +166,14 @@ for ii, method in enumerate(con_methods):
                              fig=fig, subplot=(1, 2, ii + 1))
 
 plt.show()
+
+###############################################################################
+# Save the figure (optional)
+# --------------------------
+#
+# By default matplotlib does not save using the facecolor, even though this was
+# set when the figure was generated. If not set via savefig, the labels, title,
+# and legend will be cut off from the output png file.
+
+# fname_fig = data_path + '/MEG/sample/plot_inverse_connect.png'
+# fig.savefig(fname_fig, facecolor='black')

@@ -33,7 +33,7 @@ print(raw.acqparser)
 # Extract epochs corresponding to a category
 cond = raw.acqparser.get_condition(raw, 'Auditory right')
 epochs = mne.Epochs(raw, **cond)
-epochs.average().plot_topo()
+epochs.average().plot_topo(background_color='w')
 
 ###############################################################################
 # Get epochs from all conditions, average
@@ -65,4 +65,4 @@ newcat['index'] = 9  # can be set freely
 cond = raw.acqparser.get_condition(raw, newcat)
 epochs = mne.Epochs(raw, reject=raw.acqparser.reject,
                     flat=raw.acqparser.flat, **cond)
-epochs.average().plot()
+epochs.average().plot(time_unit='s')

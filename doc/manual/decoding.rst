@@ -115,8 +115,8 @@ The columns of the matrix :math:`(W^{-1})^T` are called spatial patterns. This i
 
 Plotting a pattern is as simple as doing::
 
-    >>> info = epochs.info
-    >>> model.plot_patterns(info)  # model is an instantiation of an estimator described in this section
+    >>> info = epochs.info  # doctest: +SKIP
+    >>> model.plot_patterns(info)  # model is an instantiation of an estimator described in this section  # doctest: +SKIP
 
 .. image:: ../../_images/sphx_glr_plot_linear_model_patterns_001.png
    :align: center
@@ -124,7 +124,7 @@ Plotting a pattern is as simple as doing::
 
 To plot the corresponding filter, you can do::
 
-    >>> model.plot_filters(info)
+    >>> model.plot_filters(info)  # doctest: +SKIP
 
 .. image:: ../../_images/sphx_glr_plot_linear_model_patterns_002.png
    :align: center
@@ -152,7 +152,7 @@ conditions and therefore figure out when the effect of interest happens.
 When working with linear models as estimators, this approach boils
 down to estimating a discriminative spatial filter for each time instant.
 
-.. image:: ../../_images/sphx_glr_plot_decoding_sensors_001.png
+.. image:: ../../_images/sphx_glr_plot_sensors_decoding_001.png
    :align: center
    :width: 400px
 
@@ -177,7 +177,7 @@ dimension as the one to be used for generalization testing. For convenience,
 here, we refer to it different tasks. If :math:`X` corresponds to epochs data
 then the last dimension is time.
 
-.. image:: ../../_images/sphx_glr_plot_decoding_time_generalization_001.png
+.. image:: ../../_images/sphx_glr_plot_sensors_decoding_004.png
    :align: center
    :width: 400px
 

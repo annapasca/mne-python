@@ -4,15 +4,16 @@
 # License: BSD (3-clause)
 
 import os.path as op
+import itertools as itt
+import warnings
 
 from nose.tools import assert_true
 from numpy.testing import (assert_array_almost_equal, assert_array_equal,
                            assert_equal, assert_allclose)
 from nose.tools import assert_raises
+import pytest
 import numpy as np
 from scipy import linalg
-import warnings
-import itertools as itt
 
 from mne.cov import (regularize, whiten_evoked, _estimate_rank_meeg_cov,
                      _auto_low_rank_model, _apply_scaling_cov,
@@ -22,14 +23,13 @@ from mne.cov import (regularize, whiten_evoked, _estimate_rank_meeg_cov,
 from mne import (read_cov, write_cov, Epochs, merge_events,
                  find_events, compute_raw_covariance,
                  compute_covariance, read_evokeds, compute_proj_raw,
-                 pick_channels_cov, pick_channels, pick_types, pick_info,
-                 make_ad_hoc_cov)
+                 pick_channels_cov, pick_types, pick_info, make_ad_hoc_cov)
+from mne.fixes import _get_args
 from mne.io import read_raw_fif, RawArray, read_info
 from mne.tests.common import assert_naming, assert_snr
-from mne.utils import (_TempDir, slow_test, requires_sklearn_0_15,
-                       run_tests_if_main)
+from mne.utils import _TempDir, requires_version, run_tests_if_main
 from mne.io.proc_history import _get_sss_rank
-from mne.io.pick import channel_type, _picks_by_type
+from mne.io.pick import channel_type, _picks_by_type, _DATA_CH_TYPES_SPLIT
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
@@ -133,6 +133,12 @@ def test_ad_hoc_cov():
     assert_true('Covariance' in repr(cov))
     cov2 = read_cov(out_fname)
     assert_array_almost_equal(cov['data'], cov2['data'])
+    std = dict(grad=2e-13, mag=10e-15, eeg=0.1e-6)
+    cov = make_ad_hoc_cov(evoked.info, std)
+    cov.save(out_fname)
+    assert_true('Covariance' in repr(cov))
+    cov2 = read_cov(out_fname)
+    assert_array_almost_equal(cov['data'], cov2['data'])
 
 
 def test_io_cov():
@@ -202,16 +208,13 @@ def test_cov_estimation_on_raw():
         assert_array_almost_equal(cov.data, cov_read.data)
 
         # test with a subset of channels
-        picks = pick_channels(raw.ch_names, include=raw.ch_names[:5])
-        raw_pick = raw.copy().pick_channels(
-            [raw.ch_names[pick] for pick in picks])
+        raw_pick = raw.copy().pick_channels(raw.ch_names[:5])
         raw_pick.info.normalize_proj()
-        cov = compute_raw_covariance(raw_pick, picks=picks, tstep=None,
-                                     method=method)
+        cov = compute_raw_covariance(raw_pick, tstep=None, method=method)
         assert_true(cov_mne.ch_names[:5] == cov.ch_names)
-        assert_snr(cov.data, cov_mne.data[picks][:, picks], 1e4)
-        cov = compute_raw_covariance(raw_pick, picks=picks, method=method)
-        assert_snr(cov.data, cov_mne.data[picks][:, picks], 90)  # cutoff samps
+        assert_snr(cov.data, cov_mne.data[:5, :5], 1e4)
+        cov = compute_raw_covariance(raw_pick, method=method)
+        assert_snr(cov.data, cov_mne.data[:5, :5], 90)  # cutoff samps
         # make sure we get a warning with too short a segment
         raw_2 = read_raw_fif(raw_fname).crop(0, 1)
         with warnings.catch_warnings(record=True) as w:
@@ -227,8 +230,8 @@ def test_cov_estimation_on_raw():
                                      reject=dict(eog=1000e-6))
 
 
-@slow_test
-@requires_sklearn_0_15
+@pytest.mark.slowtest
+@requires_version('sklearn', '0.15')
 def test_cov_estimation_on_raw_reg():
     """Test estimation from raw with regularization."""
     raw = read_raw_fif(raw_fname, preload=True)
@@ -243,12 +246,21 @@ def test_cov_estimation_on_raw_reg():
     assert_snr(cov.data, cov_mne.data, 5)
 
 
-@slow_test
+def _assert_cov(cov, cov_desired, tol=0.005, nfree=True):
+    assert_equal(cov.ch_names, cov_desired.ch_names)
+    err = (linalg.norm(cov.data - cov_desired.data, ord='fro') /
+           linalg.norm(cov.data, ord='fro'))
+    assert_true(err < tol, msg='%s >= %s' % (err, tol))
+    if nfree:
+        assert_equal(cov.nfree, cov_desired.nfree)
+
+
+@pytest.mark.slowtest
 def test_cov_estimation_with_triggers():
     """Test estimation from raw with triggers."""
     tempdir = _TempDir()
     raw = read_raw_fif(raw_fname)
-    raw.set_eeg_reference()
+    raw.set_eeg_reference(projection=True).load_data()
     events = find_events(raw, stim_channel='STI 014')
     event_ids = [1, 2, 3, 4]
     reject = dict(grad=10000e-13, mag=4e-12, eeg=80e-6, eog=150e-6)
@@ -260,53 +272,43 @@ def test_cov_estimation_with_triggers():
                     reject=reject, preload=True)
 
     cov = compute_covariance(epochs, keep_sample_mean=True)
-    cov_mne = read_cov(cov_km_fname)
-    assert_true(cov_mne.ch_names == cov.ch_names)
-    assert_true((linalg.norm(cov.data - cov_mne.data, ord='fro') /
-                linalg.norm(cov.data, ord='fro')) < 0.005)
+    _assert_cov(cov, read_cov(cov_km_fname))
 
     # Test with tmin and tmax (different but not too much)
     cov_tmin_tmax = compute_covariance(epochs, tmin=-0.19, tmax=-0.01)
     assert_true(np.all(cov.data != cov_tmin_tmax.data))
-    assert_true((linalg.norm(cov.data - cov_tmin_tmax.data, ord='fro') /
-                 linalg.norm(cov_tmin_tmax.data, ord='fro')) < 0.05)
+    err = (linalg.norm(cov.data - cov_tmin_tmax.data, ord='fro') /
+           linalg.norm(cov_tmin_tmax.data, ord='fro'))
+    assert_true(err < 0.05, msg=err)
 
     # cov using a list of epochs and keep_sample_mean=True
     epochs = [Epochs(raw, events, ev_id, tmin=-0.2, tmax=0,
               baseline=(-0.2, -0.1), proj=True, reject=reject)
               for ev_id in event_ids]
-
     cov2 = compute_covariance(epochs, keep_sample_mean=True)
     assert_array_almost_equal(cov.data, cov2.data)
     assert_true(cov.ch_names == cov2.ch_names)
 
     # cov with keep_sample_mean=False using a list of epochs
     cov = compute_covariance(epochs, keep_sample_mean=False)
-    cov_mne = read_cov(cov_fname)
-    assert_true(cov_mne.ch_names == cov.ch_names)
-    assert_true((linalg.norm(cov.data - cov_mne.data, ord='fro') /
-                 linalg.norm(cov.data, ord='fro')) < 0.005)
+    _assert_cov(cov, read_cov(cov_fname), nfree=False)
 
     method_params = {'empirical': {'assume_centered': False}}
     assert_raises(ValueError, compute_covariance, epochs,
                   keep_sample_mean=False, method_params=method_params)
-
     assert_raises(ValueError, compute_covariance, epochs,
                   keep_sample_mean=False, method='factor_analysis')
 
     # test IO when computation done in Python
     cov.save(op.join(tempdir, 'test-cov.fif'))  # test saving
     cov_read = read_cov(op.join(tempdir, 'test-cov.fif'))
-    assert_true(cov_read.ch_names == cov.ch_names)
-    assert_true(cov_read.nfree == cov.nfree)
-    assert_true((linalg.norm(cov.data - cov_read.data, ord='fro') /
-                 linalg.norm(cov.data, ord='fro')) < 1e-5)
+    _assert_cov(cov, cov_read, 1e-5)
 
     # cov with list of epochs with different projectors
-    epochs = [Epochs(raw, events[:4], event_ids[0], tmin=-0.2, tmax=0,
-                     baseline=(-0.2, -0.1), proj=True, reject=reject),
-              Epochs(raw, events[:4], event_ids[0], tmin=-0.2, tmax=0,
-                     baseline=(-0.2, -0.1), proj=False, reject=reject)]
+    epochs = [Epochs(raw, events[:1], None, tmin=-0.2, tmax=0,
+                     baseline=(-0.2, -0.1), proj=True),
+              Epochs(raw, events[:1], None, tmin=-0.2, tmax=0,
+                     baseline=(-0.2, -0.1), proj=False)]
     # these should fail
     assert_raises(ValueError, compute_covariance, epochs)
     assert_raises(ValueError, compute_covariance, epochs, projs=None)
@@ -315,15 +317,16 @@ def test_cov_estimation_with_triggers():
         warnings.simplefilter('always')
         cov = compute_covariance(epochs, projs=epochs[0].info['projs'])
         cov = compute_covariance(epochs, projs=[])
-    assert_true(len(w) == 2)
+    assert_equal(len(w), 2)
 
     # test new dict support
-    epochs = Epochs(raw, events, dict(a=1, b=2, c=3, d=4), tmin=-0.2, tmax=0,
-                    baseline=(-0.2, -0.1), proj=True, reject=reject)
-    compute_covariance(epochs)
+    epochs = Epochs(raw, events, dict(a=1, b=2, c=3, d=4), tmin=-0.01, tmax=0,
+                    proj=True, reject=reject, preload=True)
+    with warnings.catch_warnings(record=True):  # samples
+        compute_covariance(epochs)
 
-    # projs checking
-    compute_covariance(epochs, projs=[])
+        # projs checking
+        compute_covariance(epochs, projs=[])
     assert_raises(TypeError, compute_covariance, epochs, projs='foo')
     assert_raises(TypeError, compute_covariance, epochs, projs=['foo'])
 
@@ -351,9 +354,11 @@ def test_regularize_cov():
     reg_noise_cov = regularize(noise_cov, raw.info,
                                mag=0.1, grad=0.1, eeg=0.1, proj=True,
                                exclude='bads')
-    assert_true(noise_cov['dim'] == reg_noise_cov['dim'])
-    assert_true(noise_cov['data'].shape == reg_noise_cov['data'].shape)
-    assert_true(np.mean(noise_cov['data'] < reg_noise_cov['data']) < 0.08)
+    assert noise_cov['dim'] == reg_noise_cov['dim']
+    assert noise_cov['data'].shape == reg_noise_cov['data'].shape
+    assert np.mean(noise_cov['data'] < reg_noise_cov['data']) < 0.08
+    # make sure all args are represented
+    assert set(_DATA_CH_TYPES_SPLIT) - set(_get_args(regularize)) == set()
 
 
 def test_whiten_evoked():
@@ -381,7 +386,7 @@ def test_whiten_evoked():
     assert_raises(RuntimeError, whiten_evoked, evoked, cov_bad, picks)
 
 
-@slow_test
+@pytest.mark.slowtest
 def test_rank():
     """Test cov rank estimation."""
     # Test that our rank estimation works properly on a simple case
@@ -505,10 +510,10 @@ def test_cov_scaling():
     assert_allclose(data, evoked.data, atol=1e-20)
 
 
-@requires_sklearn_0_15
+@requires_version('sklearn', '0.15')
 def test_auto_low_rank():
     """Test probabilistic low rank estimators."""
-    n_samples, n_features, rank = 400, 20, 10
+    n_samples, n_features, rank = 400, 10, 5
     sigma = 0.1
 
     def get_data(n_samples, n_features, rank, sigma):
@@ -524,7 +529,7 @@ def test_auto_low_rank():
 
     X = get_data(n_samples=n_samples, n_features=n_features, rank=rank,
                  sigma=sigma)
-    method_params = {'iter_n_components': [9, 10, 11]}
+    method_params = {'iter_n_components': [4, 5, 6]}
     cv = 3
     n_jobs = 1
     mode = 'factor_analysis'
@@ -552,8 +557,8 @@ def test_auto_low_rank():
                   n_jobs=n_jobs, method_params=method_params, cv=cv)
 
 
-@slow_test
-@requires_sklearn_0_15
+@pytest.mark.slowtest
+@requires_version('sklearn', '0.15')
 def test_compute_covariance_auto_reg():
     """Test automated regularization."""
     raw = read_raw_fif(raw_fname, preload=True)
@@ -579,20 +584,57 @@ def test_compute_covariance_auto_reg():
     covs = compute_covariance(epochs, method='auto',
                               method_params=method_params,
                               return_estimators=True)
+    # make sure regularization produces structured differencess
+    diag_mask = np.eye(len(epochs.ch_names)).astype(bool)
+    off_diag_mask = np.invert(diag_mask)
+    for cov_a, cov_b in itt.combinations(covs, 2):
+        if (cov_a['method'] == 'diagonal_fixed' and
+                # here we have diagnoal or no regularization.
+                cov_b['method'] == 'empirical'):
+
+            assert_true(not np.any(
+                        cov_a['data'][diag_mask] ==
+                        cov_b['data'][diag_mask]))
+
+            # but the rest is the same
+            assert_array_equal(
+                cov_a['data'][off_diag_mask],
+                cov_b['data'][off_diag_mask])
+
+        else:
+            # and here we have shrinkage everywhere.
+            assert_true(not np.any(
+                        cov_a['data'][diag_mask] ==
+                        cov_b['data'][diag_mask]))
+
+            assert_true(not np.any(
+                        cov_a['data'][diag_mask] ==
+                        cov_b['data'][diag_mask]))
 
     logliks = [c['loglik'] for c in covs]
     assert_true(np.diff(logliks).max() <= 0)  # descending order
 
-    methods = ['empirical',
-               'factor_analysis',
-               'ledoit_wolf',
-               'pca']
+    methods = ['empirical', 'factor_analysis', 'ledoit_wolf', 'oas', 'pca',
+               'shrunk', 'shrinkage']
     cov3 = compute_covariance(epochs, method=methods,
                               method_params=method_params, projs=None,
                               return_estimators=True)
+    method_names = [cov['method'] for cov in cov3]
+    for method in ['factor_analysis', 'ledoit_wolf', 'oas', 'pca',
+                   'shrinkage']:
+        this_lik = cov3[method_names.index(method)]['loglik']
+        assert -55 < this_lik < -45
+    this_lik = cov3[method_names.index('empirical')]['loglik']
+    assert -110 < this_lik < -100
+    this_lik = cov3[method_names.index('shrunk')]['loglik']
+    assert -45 < this_lik < -35
 
-    assert_equal(set([c['method'] for c in cov3]),
-                 set(methods))
+    assert_equal(set([c['method'] for c in cov3]), set(methods))
+
+    cov4 = compute_covariance(epochs, method=methods,
+                              method_params=method_params, projs=None,
+                              return_estimators=False)
+    assert cov3[0]['method'] == cov4['method']  # ordering
 
     # invalid prespecified method
     assert_raises(ValueError, compute_covariance, epochs, method='pizza')
@@ -600,5 +642,6 @@ def test_compute_covariance_auto_reg():
     # invalid scalings
     assert_raises(ValueError, compute_covariance, epochs, method='shrunk',
                   scalings=dict(misc=123))
+
 
 run_tests_if_main()

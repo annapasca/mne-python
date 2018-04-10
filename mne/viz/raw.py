@@ -12,10 +12,10 @@ from warnings import warn
 
 import numpy as np
 
+from ..annotations import _annotations_starts_stops
 from ..externals.six import string_types
 from ..io.pick import (pick_types, _pick_data_channels, pick_info,
                        _PICK_TYPES_KEYS, pick_channels, channel_type)
-from ..io.proj import setup_proj
 from ..io.meas_info import create_info
 from ..utils import verbose, get_config, _ensure_int
 from ..time_frequency import psd_welch
@@ -27,7 +27,9 @@ from .utils import (_toggle_options, _toggle_proj, tight_layout,
                     _helper_raw_resize, _select_bads, _onclick_help,
                     _setup_browser_offsets, _compute_scalings, plot_sensors,
                     _radio_clicked, _set_radio_button, _handle_topomap_bads,
-                    _change_channel_group, _plot_annotations, _setup_butterfly)
+                    _change_channel_group, _plot_annotations, _setup_butterfly,
+                    _handle_decim, _setup_plot_projector, _check_cov,
+                    _set_ax_label_style)
 from .evoked import _plot_lines
 
 
@@ -38,8 +40,8 @@ def _plot_update_raw_proj(params, bools):
         params['info']['projs'] = [copy.deepcopy(params['projs'][ii])
                                    for ii in inds]
         params['proj_bools'] = bools
-    params['projector'], _ = setup_proj(params['info'], add_eeg_ref=False,
-                                        verbose=False)
+    params['projector'], params['whitened_ch_names'] = _setup_plot_projector(
+        params['info'], params['noise_cov'], True, params['use_noise_cov'])
     params['update_fun']()
     params['plot_fun']()
 
@@ -59,15 +61,26 @@ def _update_raw_data(params):
     if params['remove_dc'] is True:
         data -= np.mean(data, axis=1)[:, np.newaxis]
     if params['ba'] is not None:
-        data[data_picks] = filtfilt(params['ba'][0], params['ba'][1],
-                                    data[data_picks], axis=1, padlen=0)
+        # filter with the same defaults as `raw.filter`, except
+        # we might as well actually filter the bad segments, too
+        these_bounds = np.unique(
+            np.maximum(np.minimum(params['filt_bounds'], start), stop))
+        for start_, stop_ in zip(these_bounds[:-1], these_bounds[1:]):
+            data[data_picks, start_:stop:] = \
+                filtfilt(params['ba'][0], params['ba'][1],
+                         data[data_picks, start_:stop_], axis=1, padlen=0)
     # scale
     for di in range(data.shape[0]):
-        data[di] /= params['scalings'][params['types'][di]]
+        ch_name = params['info']['ch_names'][di]
         # stim channels should be hard limited
         if params['types'][di] == 'stim':
             norm = float(max(data[di]))
-            data[di] /= norm if norm > 0 else 1.
+        elif ch_name in params['whitened_ch_names'] and \
+                ch_name not in params['info']['bads']:
+            norm = params['scalings']['whitened']
+        else:
+            norm = params['scalings'][params['types'][di]]
+        data[di] /= norm if norm != 0 else 1.
     # clip
     if params['clipping'] == 'transparent':
         data[np.logical_or(data > 1, data < -1)] = np.nan
@@ -93,7 +106,7 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
              show_options=False, title=None, show=True, block=False,
              highpass=None, lowpass=None, filtorder=4, clipping=None,
              show_first_samp=False, proj=True, group_by='type',
-             butterfly=False):
+             butterfly=False, decim='auto', noise_cov=None, event_id=None):
     """Plot raw data.
 
     Parameters
@@ -103,7 +116,7 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
     events : array | None
         Events to show with vertical bars.
     duration : float
-        Time window (sec) to plot. The lesser of this value and the duration
+        Time window (s) to plot. The lesser of this value and the duration
         of the raw file will be used.
     start : float
         Initial time to show (can be changed dynamically once plotted). If
@@ -136,7 +149,7 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
 
             dict(mag=1e-12, grad=4e-11, eeg=20e-6, eog=150e-6, ecg=5e-4,
                  emg=1e-3, ref_meg=1e-12, misc=1e-3, stim=1,
-                 resp=1, chpi=1e-4)
+                 resp=1, chpi=1e-4, whitened=1e2)
 
     remove_dc : bool
         If True remove DC component when plotting data.
@@ -194,6 +207,30 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
         modes are overrided with ``order`` keyword.
     butterfly : bool
         Whether to start in butterfly mode. Defaults to False.
+    decim : int | 'auto'
+        Amount to decimate the data during display for speed purposes.
+        You should only decimate if the data are sufficiently low-passed,
+        otherwise aliasing can occur. The 'auto' mode (default) uses
+        the decimation that results in a sampling rate least three times
+        larger than ``min(info['lowpass'], lowpass)`` (e.g., a 40 Hz lowpass
+        will result in at least a 120 Hz displayed sample rate).
+    noise_cov : instance of Covariance | str | None
+        Noise covariance used to whiten the data while plotting.
+        Whitened data channels are scaled by ``scalings['whitened']``,
+        and their channel names are shown in italic.
+        Can be a string to load a covariance from disk.
+        See also :meth:`mne.Evoked.plot_white` for additional inspection
+        of noise covariance properties when whitening evoked data.
+        For data processed with SSS, the effective dependence between
+        magnetometers and gradiometers may introduce differences in scaling,
+        consider using :meth:`mne.Evoked.plot_white`.
+
+        .. versionadded:: 0.16.0
+    event_id : dict | None
+        Event IDs used to show at event markers (default None shows
+        theh event numbers).
+
+        .. versionadded:: 0.16.0
 
     Returns
     -------
@@ -205,11 +242,13 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
     The arrow keys (up/down/left/right) can typically be used to navigate
     between channels and time ranges, but this depends on the backend
     matplotlib is configured to use (e.g., mpl.use('TkAgg') should work). The
-    scaling can be adjusted with - and + (or =) keys. The viewport dimensions
-    can be adjusted with page up/page down and home/end keys. Full screen mode
-    can be to toggled with f11 key. To mark or un-mark a channel as bad, click
-    on the rather flat segments of a channel's time series. The changes will be
-    reflected immediately in the raw object's ``raw.info['bads']`` entry.
+    left/right arrows will scroll by 25% of ``duration``, whereas
+    shift+left/shift+right will scroll by 100% of ``duration``. The scaling can
+    be adjusted with - and + (or =) keys. The viewport dimensions can be
+    adjusted with page up/page down and home/end keys. Full screen mode can be
+    toggled with the F11 key. To mark or un-mark a channel as bad, click on a
+    channel label or a channel trace. The changes will be reflected immediately
+    in the raw object's ``raw.info['bads']`` entry.
 
     If projectors are present, a button labelled "Proj" in the lower right
     corner of the plot window opens a secondary control window, which allows
@@ -217,8 +256,8 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
     of interactively observing how each projector would affect the raw data if
     it were applied.
 
-    Annotation mode is toggled by pressing 'a' and butterfly mode by pressing
-    'b'.
+    Annotation mode is toggled by pressing 'a', butterfly mode by pressing
+    'b', and whitening mode (when ``noise_cov is not None``) by pressing 'w'.
     """
     import matplotlib.pyplot as plt
     import matplotlib as mpl
@@ -233,7 +272,7 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
     # figure out the IIR filtering parameters
     nyq = raw.info['sfreq'] / 2.
     if highpass is None and lowpass is None:
-        ba = None
+        ba = filt_bounds = None
     else:
         filtorder = int(filtorder)
         if filtorder <= 0:
@@ -253,9 +292,12 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
                                  % (lowpass, highpass))
             ba = butter(filtorder, [highpass / nyq, lowpass / nyq], 'bandpass',
                         analog=False)
+        sr, sp = _annotations_starts_stops(raw, ('edge', 'bad_acq_skip'),
+                                           invert=True)
+        filt_bounds = np.unique(np.concatenate([sr, sp]))
 
     # make a copy of info, remove projection (for now)
-    info = copy.deepcopy(raw.info)
+    info = raw.info.copy()
     projs = info['projs']
     info['projs'] = []
     n_times = raw.n_times
@@ -305,15 +347,12 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
     # put them back to original or modified order for natural plotting
     reord = np.argsort(inds)
     types = [types[ri] for ri in reord]
-    if isinstance(order, string_types):
-        group_by = order
-        warn('Using string order is deprecated and will not be allowed in '
-             '0.16. Use group_by instead.')
-    elif isinstance(order, (np.ndarray, list)):
+    if isinstance(order, (np.ndarray, list, tuple)):
         # put back to original order first, then use new order
         inds = inds[reord][order]
     elif order is not None:
-        raise ValueError('Unkown order type. Got %s.' % type(order))
+        raise ValueError('Unkown order, should be array-like. '
+                         'Got "%s" (%s).' % (order, type(order)))
 
     if group_by in ['selection', 'position']:
         selections, fig_selection = _setup_browser_selection(raw, group_by)
@@ -334,18 +373,24 @@ def plot_raw(raw, events=None, duration=10.0, start=0.0, n_channels=20,
         if key <= 0 and key != -1:
             raise KeyError('only key <= 0 allowed is -1 (cannot use %s)'
                            % key)
+    decim, data_picks = _handle_decim(info, decim, lowpass)
+    noise_cov = _check_cov(noise_cov, info)
 
     # set up projection and data parameters
     duration = min(raw.times[-1], float(duration))
     first_time = raw._first_time if show_first_samp else 0
     start += first_time
+    event_id_rev = {val: key for key, val in (event_id or {}).items()}
     params = dict(raw=raw, ch_start=0, t_start=start, duration=duration,
                   info=info, projs=projs, remove_dc=remove_dc, ba=ba,
                   n_channels=n_channels, scalings=scalings, types=types,
                   n_times=n_times, event_times=event_times, inds=inds,
                   event_nums=event_nums, clipping=clipping, fig_proj=None,
                   first_time=first_time, added_label=list(), butterfly=False,
-                  group_by=group_by, orig_inds=inds.copy())
+                  group_by=group_by, orig_inds=inds.copy(), decim=decim,
+                  data_picks=data_picks, event_id_rev=event_id_rev,
+                  noise_cov=noise_cov, use_noise_cov=noise_cov is not None,
+                  filt_bounds=filt_bounds)
 
     if group_by in ['selection', 'position']:
         params['fig_selection'] = fig_selection
@@ -498,44 +543,41 @@ def _set_psd_plot_params(info, proj, picks, ax, area_mode):
     import matplotlib.pyplot as plt
     if area_mode not in [None, 'std', 'range']:
         raise ValueError('"area_mode" must be "std", "range", or None')
-    if picks is None:
-        # XXX this could be refactored more with e.g., plot_evoked
-        megs = ['mag', 'grad', False, False, False]
-        eegs = [False, False, True, False, False]
-        seegs = [False, False, False, True, False]
-        ecogs = [False, False, False, False, True]
-        names = ['mag', 'grad', 'eeg', 'seeg', 'ecog']
-        titles = _handle_default('titles', None)
-        units = _handle_default('units', None)
-        scalings = _handle_default('scalings', None)
-        picks_list = list()
-        titles_list = list()
-        units_list = list()
-        scalings_list = list()
-        for meg, eeg, seeg, ecog, name in zip(megs, eegs, seegs, ecogs, names):
-            picks = pick_types(info, meg=meg, eeg=eeg, seeg=seeg, ecog=ecog,
-                               ref_meg=False)
-            if len(picks) > 0:
-                picks_list.append(picks)
-                titles_list.append(titles[name])
-                units_list.append(units[name])
-                scalings_list.append(scalings[name])
-        if len(picks_list) == 0:
-            raise RuntimeError('No data channels found')
-        if ax is not None:
-            if isinstance(ax, plt.Axes):
-                ax = [ax]
-            if len(ax) != len(picks_list):
-                raise ValueError('For this dataset with picks=None %s axes '
-                                 'must be supplied, got %s'
-                                 % (len(picks_list), len(ax)))
-            ax_list = ax
-    else:
-        picks_list = [picks]
-        titles_list = ['Selected channels']
-        units_list = ['amplitude']
-        scalings_list = [1.]
-        ax_list = [ax]
+
+    # XXX this could be refactored more with e.g., plot_evoked
+    megs = ['mag', 'grad', False, False, False]
+    eegs = [False, False, True, False, False]
+    seegs = [False, False, False, True, False]
+    ecogs = [False, False, False, False, True]
+    names = ['mag', 'grad', 'eeg', 'seeg', 'ecog']
+    titles = _handle_default('titles', None)
+    units = _handle_default('units', None)
+    scalings = _handle_default('scalings', None)
+    picks_list = list()
+    titles_list = list()
+    units_list = list()
+    scalings_list = list()
+    for meg, eeg, seeg, ecog, name in zip(megs, eegs, seegs, ecogs, names):
+        these_picks = pick_types(info, meg=meg, eeg=eeg, seeg=seeg, ecog=ecog,
+                                 ref_meg=False)
+        if picks is not None:
+            these_picks = np.intersect1d(these_picks, picks)
+        if len(these_picks) > 0:
+            picks_list.append(these_picks)
+            titles_list.append(titles[name])
+            units_list.append(units[name])
+            scalings_list.append(scalings[name])
+    if len(picks_list) == 0:
+        raise RuntimeError('No data channels found')
+    if ax is not None:
+        if isinstance(ax, plt.Axes):
+            ax = [ax]
+        if len(ax) != len(picks_list):
+            raise ValueError('For this dataset with picks=None %s axes '
+                             'must be supplied, got %s'
+                             % (len(picks_list), len(ax)))
+        ax_list = ax
+    del picks
 
     make_label = False
     fig = None
@@ -557,32 +599,68 @@ def _set_psd_plot_params(info, proj, picks, ax, area_mode):
             ax_list, make_label)
 
 
-def _convert_psds(psds, dB, scaling, unit, ch_names):
-    """Convert PSDs to dB (if necessary) and appropriate units."""
-    if dB:
-        where = np.where(psds.min(1) <= 0)[0]
-        if len(where) > 0:
-            raise ValueError("Infinite value in PSD for channel(s) %s. "
-                             "These channels might be dead." %
-                             ', '.join(ch_names[ii] for ii in where))
-        psds *= scaling * scaling
-        np.log10(psds, out=psds)
-        psds *= 10
-        ylabel = '%s/Hz (dB)' % unit
-    else:
+def _convert_psds(psds, dB, estimate, scaling, unit, ch_names):
+    """Convert PSDs to dB (if necessary) and appropriate units.
+
+    The following table summarizes the relationship between the value of
+    parameters ``dB`` and ``estimate``, and the type of plot and corresponding
+    units.
+
+    | dB    | estimate    | plot | units             |
+    |-------+-------------+------+-------------------|
+    | True  | 'power'     | PSD  | amp**2/Hz (dB)    |
+    | True  | 'amplitude' | ASD  | amp/sqrt(Hz) (dB) |
+    | True  | 'auto'      | PSD  | amp**2/Hz (dB)    |
+    | False | 'power'     | PSD  | amp**2/Hz         |
+    | False | 'amplitude' | ASD  | amp/sqrt(Hz)      |
+    | False | 'auto'      | ASD  | amp/sqrt(Hz)      |
+
+    where amp are the units corresponding to the variable, as specified by
+    ``unit``.
+    """
+    where = np.where(psds.min(1) <= 0)[0]
+    dead_ch = ', '.join(ch_names[ii] for ii in where)
+    if len(where) > 0:
+        if dB:
+            msg = "Infinite value in PSD for channel(s) %s. " \
+                  "These channels might be dead." % dead_ch
+        else:
+            msg = "Zero value in PSD for channel(s) %s. " \
+                  "These channels might be dead." % dead_ch
+        warn(msg)
+
+    if estimate == 'auto':
+        estimate = 'power' if dB else 'amplitude'
+
+    if estimate == 'amplitude':
         np.sqrt(psds, out=psds)
         psds *= scaling
-        ylabel = '$\\frac{%s}{\\sqrt{Hz}}$' % unit
+        ylabel = r'$\mathrm{%s / \sqrt{Hz}}$' % unit
+    else:
+        psds *= scaling * scaling
+        ylabel = r'$\mathrm{%s^2}/Hz}$' % unit
+
+    if dB:
+        np.log10(np.maximum(psds, np.finfo(float).tiny), out=psds)
+        psds *= 10
+        ylabel += r'$\ \mathrm{(dB)}$'
+
     return ylabel
 
 
 @verbose
 def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
                  n_fft=None, picks=None, ax=None, color='black',
-                 area_mode='std', area_alpha=0.33, n_overlap=0, dB=True,
-                 average=None, show=True, n_jobs=1, line_alpha=None,
-                 spatial_colors=None, xscale='linear', verbose=None):
+                 area_mode='std', area_alpha=0.33, n_overlap=0,
+                 dB=True, estimate='auto', average=False, show=True, n_jobs=1,
+                 line_alpha=None, spatial_colors=None, xscale='linear',
+                 reject_by_annotation=True, verbose=None):
     """Plot the power spectral density across channels.
+
+    Different channel types are drawn in sub-plots. When the data has been
+    processed with a bandpass, lowpass or highpass filter, dashed lines
+    indicate the boundaries of the filter (--). The line noise frequency is
+    also indicated with a dashed line (-.).
 
     Parameters
     ----------
@@ -622,9 +700,19 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         The number of points of overlap between blocks. The default value
         is 0 (no overlap).
     dB : bool
-        If True, transform data to decibels. If False, plot amplitudes.
+        Plot Power Spectral Density (PSD), in units (amplitude**2/Hz (dB)) if
+        ``dB=True``, and ``estimate='power'`` or ``estimate='auto'``. Plot PSD
+        in units (amplitude**2/Hz) if ``dB=False`` and,
+        ``estimate='power'``. Plot Amplitude Spectral Density (ASD), in units
+        (amplitude/sqrt(Hz)), if ``dB=False`` and ``estimate='amplitude'`` or
+        ``estimate='auto'``. Plot ASD, in units (amplitude/sqrt(Hz) (db)), if
+        ``dB=True`` and ``estimate='amplitude'``.
+    estimate : str, {'auto', 'power', 'amplitude'}
+        Can be "power" for power spectral density (PSD), "amplitude" for
+        amplitude spectrum density (ASD), or "auto" (default), which uses
+        "power" when dB is True and "amplitude" otherwise.
     average : bool
-        If False, the PSDs of all channels is displayed. No averaging
+        If False (default), the PSDs of all channels is displayed. No averaging
         is done and parameters area_mode and area_alpha are ignored. When
         False, it is possible to paint an area (hold left mouse button and
         drag) to plot a topomap.
@@ -639,6 +727,13 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         Whether to use spatial colors. Only used when ``average=False``.
     xscale : str
         Can be 'linear' (default) or 'log'.
+    reject_by_annotation : bool
+        Whether to omit bad segments from the data while computing the
+        PSD. If True, annotated segments with a description that starts
+        with 'bad' are omitted. Has no effect if ``inst`` is an Epochs or
+        Evoked object. Defaults to True.
+
+        .. versionadded:: 0.15.0
     verbose : bool, str, int, or None
         If not None, override default verbose level (see :func:`mne.verbose`
         and :ref:`Logging documentation <tut_logging>` for more).
@@ -649,10 +744,6 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         Figure with frequency spectra of the data channels.
     """
     from matplotlib.ticker import ScalarFormatter
-    if average is None:
-        warn('In version 0.15 average will default to False and '
-             'spatial_colors will default to True.', DeprecationWarning)
-        average = True
 
     if average and spatial_colors:
         raise ValueError('Average and spatial_colors cannot be enabled '
@@ -664,10 +755,11 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         make_label = _set_psd_plot_params(raw.info, proj, picks, ax, area_mode)
     del ax
     if line_alpha is None:
-        line_alpha = 1.0 if average else 0.1
+        line_alpha = 1.0 if average else 0.75
     line_alpha = float(line_alpha)
 
     psd_list = list()
+    ylabels = list()
     if n_fft is None:
         tmax = raw.times[-1] if not np.isfinite(tmax) else tmax
         n_fft = min(np.diff(raw.time_as_index([tmin, tmax]))[0] + 1, 2048)
@@ -675,9 +767,11 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         ax = ax_list[ii]
         psds, freqs = psd_welch(raw, tmin=tmin, tmax=tmax, picks=picks,
                                 fmin=fmin, fmax=fmax, proj=proj, n_fft=n_fft,
-                                n_overlap=n_overlap, n_jobs=n_jobs)
+                                n_overlap=n_overlap, n_jobs=n_jobs,
+                                reject_by_annotation=reject_by_annotation)
 
-        ylabel = _convert_psds(psds, dB, scalings_list[ii], units_list[ii],
+        ylabel = _convert_psds(psds, dB, estimate, scalings_list[ii],
+                               units_list[ii],
                                [raw.ch_names[pi] for pi in picks])
 
         if average:
@@ -700,10 +794,13 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
 
         if make_label:
             if ii == len(picks_list) - 1:
-                ax.set_xlabel('Freq (Hz)')
+                ax.set_xlabel('Frequency (Hz)')
             ax.set_ylabel(ylabel)
             ax.set_title(titles_list[ii])
             ax.set_xlim(freqs[0], freqs[-1])
+
+        ylabels.append(ylabel)
+
     for key, ls in zip(['lowpass', 'highpass', 'line_freq'],
                        ['--', '--', '-.']):
         if raw.info[key] is not None:
@@ -727,8 +824,9 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
         for this_type in valid_channel_types:
             if this_type in types:
                 ch_types_used.append(this_type)
-        unit = 'dB/Hz' if dB else '$1/\\sqrt{Hz}$)'
-        units = {t: 'PSD (%s)' % unit for t in ch_types_used}
+        assert len(ch_types_used) == len(ax_list)
+        unit = ''
+        units = {t: yl for t, yl in zip(ch_types_used, ylabels)}
         titles = {c: t for c, t in zip(ch_types_used, titles_list)}
         picks = np.arange(len(psd_list))
         if not spatial_colors:
@@ -738,7 +836,7 @@ def plot_raw_psd(raw, tmin=0., tmax=np.inf, fmin=0, fmax=np.inf, proj=False,
                     types=types, zorder='std', xlim=(freqs[0], freqs[-1]),
                     ylim=None, times=freqs, bad_ch_idx=[], titles=titles,
                     ch_types_used=ch_types_used, selectable=True, psd=True,
-                    line_alpha=line_alpha)
+                    line_alpha=line_alpha, nave=None)
     for ax in ax_list:
         ax.grid(True, linestyle=':')
         if xscale == 'log':
@@ -763,9 +861,8 @@ def _prepare_mne_browse_raw(params, title, bgcolor, color, bad_color, inds,
         size = tuple([float(s) for s in size])
 
     fig = figure_nobar(facecolor=bgcolor, figsize=size)
-    fig.canvas.set_window_title('mne_browse_raw')
+    fig.canvas.set_window_title(title if title else "Raw")
     ax = plt.subplot2grid((10, 10), (0, 1), colspan=8, rowspan=9)
-    ax.set_title(title, fontsize=12)
     ax_hscroll = plt.subplot2grid((10, 10), (9, 1), colspan=8)
     ax_hscroll.get_yaxis().set_visible(False)
     ax_hscroll.set_xlabel('Time (s)')
@@ -844,12 +941,15 @@ def _prepare_mne_browse_raw(params, title, bgcolor, color, bad_color, inds,
     ax.set_xlim(params['t_start'], params['t_start'] + params['duration'],
                 False)
 
-    params['lines'] = [ax.plot([np.nan], antialiased=False, linewidth=0.1)[0]
+    params['lines'] = [ax.plot([np.nan], antialiased=True, linewidth=0.5)[0]
                        for _ in range(n_ch)]
     ax.set_yticklabels(['X' * max([len(ch) for ch in info['ch_names']])])
     params['fig_annotation'] = None
     params['fig_help'] = None
     params['segment_line'] = None
+
+    # default key to close window
+    params['close_key'] = 'escape'
 
 
 def _plot_raw_traces(params, color, bad_color, event_lines=None,
@@ -889,9 +989,14 @@ def _plot_raw_traces(params, color, bad_color, event_lines=None,
             if isinstance(this_color, dict):
                 this_color = this_color[params['types'][inds[ch_ind]]]
 
+            if inds[ch_ind] in params['data_picks']:
+                this_decim = params['decim']
+            else:
+                this_decim = 1
+            this_t = params['times'][::this_decim] + params['first_time']
             # subtraction here gets correct orientation for flipped ylim
-            lines[ii].set_ydata(offset - this_data)
-            lines[ii].set_xdata(params['times'] + params['first_time'])
+            lines[ii].set_ydata(offset - this_data[..., ::this_decim])
+            lines[ii].set_xdata(this_t)
             lines[ii].set_color(this_color)
             vars(lines[ii])['ch_name'] = ch_name
             vars(lines[ii])['def_color'] = color[params['types'][inds[ch_ind]]]
@@ -906,7 +1011,8 @@ def _plot_raw_traces(params, color, bad_color, event_lines=None,
                     label.set_color('black')
             else:
                 # set label color
-                this_color = bad_color if ch_name in info['bads'] else 'black'
+                this_color = (bad_color if ch_name in info['bads'] else
+                              this_color)
                 labels[ii].set_color(this_color)
             lines[ii].set_zorder(this_z)
         else:
@@ -939,14 +1045,23 @@ def _plot_raw_traces(params, color, bad_color, event_lines=None,
                     ys += [0, ylim[0], np.nan]
                 line.set_xdata(xs)
                 line.set_ydata(ys)
+                line.set_zorder(0)
             else:
                 line.set_xdata([])
                 line.set_ydata([])
 
+        params['ax'].texts = []   # delete event and annotation texts
+        # don't add event numbers for more than 50 visible events
+        if len(event_times) <= 50:
+            for ev_time, ev_num in zip(event_times, event_nums):
+                if -1 in event_color or ev_num in event_color:
+                    text = params['event_id_rev'].get(ev_num, ev_num)
+                    params['ax'].text(ev_time, -0.05, text, fontsize=8,
+                                      ha='center')
+
     if 'segments' in params:
-        while len(params['ax'].collections) > 0:
-            params['ax'].collections.pop(0)
-            params['ax'].texts.pop(0)
+        while len(params['ax'].collections) > 0:  # delete previous annotations
+            params['ax'].collections.pop(-1)
         segments = params['segments']
         times = params['times']
         ylim = params['ax'].get_ylim()
@@ -969,6 +1084,7 @@ def _plot_raw_traces(params, color, bad_color, event_lines=None,
                           params['duration'], False)
     if not butterfly:
         params['ax'].set_yticklabels(tick_list, rotation=0)
+        _set_ax_label_style(params['ax'], params)
     if 'fig_selection' not in params:
         params['vsel_patch'].set_y(params['ch_start'])
     params['fig'].canvas.draw()

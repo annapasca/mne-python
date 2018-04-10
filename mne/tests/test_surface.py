@@ -6,6 +6,7 @@ import warnings
 from shutil import copyfile
 from scipy import sparse
 from nose.tools import assert_true, assert_raises
+import pytest
 from numpy.testing import assert_array_equal, assert_allclose, assert_equal
 
 from mne.datasets import testing
@@ -14,7 +15,7 @@ from mne.surface import (read_morph_map, _compute_nearest,
                          fast_cross_3d, get_head_surf, read_curvature,
                          get_meg_helmet_surf)
 from mne.utils import (_TempDir, requires_mayavi, requires_tvtk,
-                       run_tests_if_main, slow_test, object_diff)
+                       run_tests_if_main, object_diff, traits_test)
 from mne.io import read_info
 from mne.transforms import _get_trans
 
@@ -71,22 +72,26 @@ def test_compute_nearest():
     nn_true = rng.permutation(np.arange(500, dtype=np.int))[:20]
     y = x[nn_true]
 
-    nn1 = _compute_nearest(x, y, use_balltree=False)
-    nn2 = _compute_nearest(x, y, use_balltree=True)
+    nn1 = _compute_nearest(x, y, method='BallTree')
+    nn2 = _compute_nearest(x, y, method='cKDTree')
+    nn3 = _compute_nearest(x, y, method='cdist')
     assert_array_equal(nn_true, nn1)
     assert_array_equal(nn_true, nn2)
+    assert_array_equal(nn_true, nn3)
 
     # test distance support
-    nnn1 = _compute_nearest(x, y, use_balltree=False, return_dists=True)
-    nnn2 = _compute_nearest(x, y, use_balltree=True, return_dists=True)
+    nnn1 = _compute_nearest(x, y, method='BallTree', return_dists=True)
+    nnn2 = _compute_nearest(x, y, method='cKDTree', return_dists=True)
+    nnn3 = _compute_nearest(x, y, method='cdist', return_dists=True)
     assert_array_equal(nnn1[0], nn_true)
     assert_array_equal(nnn1[1], np.zeros_like(nn1))  # all dists should be 0
     assert_equal(len(nnn1), len(nnn2))
-    for nn1, nn2 in zip(nnn1, nnn2):
+    for nn1, nn2, nn3 in zip(nnn1, nnn2, nnn3):
         assert_array_equal(nn1, nn2)
+        assert_array_equal(nn1, nn3)
 
 
-@slow_test
+@pytest.mark.slowtest
 @testing.requires_testing_data
 def test_make_morph_maps():
     """Test reading and creating morph maps."""
@@ -95,20 +100,27 @@ def test_make_morph_maps():
     for subject in ('sample', 'sample_ds', 'fsaverage_ds'):
         os.mkdir(op.join(tempdir, subject))
         os.mkdir(op.join(tempdir, subject, 'surf'))
+        regs = ('reg', 'left_right') if subject == 'fsaverage_ds' else ('reg',)
         for hemi in ['lh', 'rh']:
-            args = [subject, 'surf', hemi + '.sphere.reg']
-            copyfile(op.join(subjects_dir, *args),
-                     op.join(tempdir, *args))
+            for reg in regs:
+                args = [subject, 'surf', hemi + '.sphere.' + reg]
+                copyfile(op.join(subjects_dir, *args),
+                         op.join(tempdir, *args))
 
-    # this should trigger the creation of morph-maps dir and create the map
-    with warnings.catch_warnings(record=True):
-        mmap = read_morph_map('fsaverage_ds', 'sample_ds', tempdir)
-    mmap2 = read_morph_map('fsaverage_ds', 'sample_ds', subjects_dir)
-    assert_equal(len(mmap), len(mmap2))
-    for m1, m2 in zip(mmap, mmap2):
-        # deal with sparse matrix stuff
-        diff = (m1 - m2).data
-        assert_allclose(diff, np.zeros_like(diff), atol=1e-3, rtol=0)
+    for subject_from, subject_to, xhemi in (
+            ('fsaverage_ds', 'sample_ds', False),
+            ('fsaverage_ds', 'fsaverage_ds', True)):
+        # trigger the creation of morph-maps dir and create the map
+        with warnings.catch_warnings(record=True):
+            mmap = read_morph_map(subject_from, subject_to, tempdir,
+                                  xhemi=xhemi)
+        mmap2 = read_morph_map(subject_from, subject_to, subjects_dir,
+                               xhemi=xhemi)
+        assert_equal(len(mmap), len(mmap2))
+        for m1, m2 in zip(mmap, mmap2):
+            # deal with sparse matrix stuff
+            diff = (m1 - m2).data
+            assert_allclose(diff, np.zeros_like(diff), atol=1e-3, rtol=0)
 
     # This will also trigger creation, but it's trivial
     with warnings.catch_warnings(record=True):
@@ -152,6 +164,7 @@ def test_read_curv():
 
 @requires_tvtk
 @requires_mayavi
+@traits_test
 def test_decimate_surface():
     """Test triangular surface decimation."""
     points = np.array([[-0.00686118, -0.10369860, 0.02615170],

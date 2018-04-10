@@ -85,7 +85,7 @@ class FieldTripClient(object):
                 logger.info("FieldTripClient: Connected")
                 success = True
                 break
-            except:
+            except Exception:
                 current_time = time.time()
                 time.sleep(0.1)
 
@@ -155,7 +155,8 @@ class FieldTripClient(object):
                 this_info['scanno'] = idx
 
                 # extract numerical part of channel name
-                this_info['logno'] = int(re.findall('[^\W\d_]+|\d+', ch)[-1])
+                this_info['logno'] = \
+                    int(re.findall(r'[^\W\d_]+|\d+', ch)[-1])
 
                 if ch.startswith('EEG'):
                     this_info['kind'] = FIFF.FIFFV_EEG_CH

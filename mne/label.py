@@ -14,7 +14,8 @@ import re
 import numpy as np
 from scipy import linalg, sparse
 
-from .utils import get_subjects_dir, _check_subject, logger, verbose, warn
+from .utils import get_subjects_dir, _check_subject, logger, verbose, warn,\
+    check_random_state
 from .source_estimate import (morph_data, SourceEstimate, _center_of_mass,
                               spatial_src_connectivity)
 from .source_space import add_source_space_distances
@@ -203,7 +204,7 @@ class Label(object):
         # check parameters
         if not isinstance(hemi, string_types):
             raise ValueError('hemi must be a string, not %s' % type(hemi))
-        vertices = np.asarray(vertices)
+        vertices = np.asarray(vertices, int)
         if np.any(np.diff(vertices.astype(int)) <= 0):
             raise ValueError('Vertices must be ordered in increasing order.')
 
@@ -1063,7 +1064,7 @@ def _split_label_contig(label_to_split, subject=None, subjects_dir=None):
     labels = []
     for div, name, color in zip(label_divs, names, colors):
         # Get indices of dipoles within this division of the label
-        verts = np.array(sorted(list(div)))
+        verts = np.array(sorted(list(div)), int)
         vert_indices = np.in1d(verts_arr, verts, assume_unique=True)
 
         # Set label attributes
@@ -1214,9 +1215,9 @@ def label_sign_flip(label, src):
 
     Parameters
     ----------
-    label : Label
+    label : Label | BiHemiLabel
         A label.
-    src : list of dict
+    src : SourceSpaces
         The source space over which the label is defined.
 
     Returns
@@ -1231,28 +1232,37 @@ def label_sign_flip(label, src):
     rh_vertno = src[1]['vertno']
 
     # get source orientations
-    if label.hemi == 'lh':
-        vertno_sel = np.intersect1d(lh_vertno, label.vertices)
-        if len(vertno_sel) == 0:
-            return np.array([], int)
-        ori = src[0]['nn'][vertno_sel]
-    elif label.hemi == 'rh':
-        vertno_sel = np.intersect1d(rh_vertno, label.vertices)
-        if len(vertno_sel) == 0:
-            return np.array([], int)
-        ori = src[1]['nn'][vertno_sel]
-    else:
-        raise Exception("Unknown hemisphere type")
+    ori = list()
+    if label.hemi in ('lh', 'both'):
+        vertices = label.vertices if label.hemi == 'lh' else label.lh.vertices
+        vertno_sel = np.intersect1d(lh_vertno, vertices)
+        ori.append(src[0]['nn'][vertno_sel])
+    if label.hemi in ('rh', 'both'):
+        vertices = label.vertices if label.hemi == 'rh' else label.rh.vertices
+        vertno_sel = np.intersect1d(rh_vertno, vertices)
+        ori.append(src[1]['nn'][vertno_sel])
+    if len(ori) == 0:
+        raise Exception('Unknown hemisphere type "%s"' % (label.hemi,))
+    ori = np.concatenate(ori, axis=0)
+    if len(ori) == 0:
+        return np.array([], int)
 
     _, _, Vh = linalg.svd(ori, full_matrices=False)
 
+    # The sign of Vh is ambiguous, so we should align to the max-positive
+    # (outward) direction
+    dots = np.dot(ori, Vh[0])
+    if np.mean(dots) < 0:
+        dots *= -1
+
     # Comparing to the direction of the first right singular vector
-    flip = np.sign(np.dot(ori, Vh[0]))
+    flip = np.sign(dots)
     return flip
 
 
+@verbose
 def stc_to_label(stc, src=None, smooth=True, connected=False,
-                 subjects_dir=None):
+                 subjects_dir=None, verbose=None):
     """Compute a label from the non-zero sources in an stc object.
 
     Parameters
@@ -1273,6 +1283,9 @@ def stc_to_label(stc, src=None, smooth=True, connected=False,
         of the maximum value in the stc.
     subjects_dir : str | None
         Path to SUBJECTS_DIR if it is not set in the environment.
+    verbose : bool, str, int, or None
+        If not None, override default verbose level (see :func:`mne.verbose`
+        and :ref:`Logging documentation <tut_logging>` for more).
 
     Returns
     -------
@@ -1430,8 +1443,8 @@ def _verts_within_dist(graph, sources, max_dist):
                         verts_added.append(j)
         verts_added_last = verts_added
 
-    verts = np.sort(np.array(list(dist_map.keys()), dtype=np.int))
-    dist = np.array([dist_map[v] for v in verts])
+    verts = np.sort(np.array(list(dist_map.keys()), int))
+    dist = np.array([dist_map[v] for v in verts], int)
 
     return verts, dist
 
@@ -1647,6 +1660,163 @@ def _grow_nonoverlapping_labels(subject, seeds_, extents_, hemis, vertices_,
     return labels
 
 
+def random_parcellation(subject, n_parcel, hemi, subjects_dir=None,
+                        surface='white', random_state=None):
+    """Generate random cortex parcellation by growing labels.
+
+    This function generates a number of labels which don't intersect and
+    cover the whole surface. Regions are growing around randomly chosen
+    seeds.
+
+    Parameters
+    ----------
+    subject : string
+        Name of the subject as in SUBJECTS_DIR.
+    n_parcel : int
+        Total number of cortical parcels.
+    hemi : str
+        hemisphere id (ie 'lh', 'rh', 'both'). In the case
+        of 'both', both hemispheres are processed with (n_parcel // 2)
+        parcels per hemisphere.
+    subjects_dir : string
+        Path to SUBJECTS_DIR if not set in the environment.
+    surface : string
+        The surface used to grow the labels, defaults to the white surface.
+    random_state : None | int | np.random.RandomState
+        To specify the random generator state.
+
+    Returns
+    -------
+    labels : list of Label
+        Random cortex parcellation
+    """
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
+    if hemi == 'both':
+        hemi = ['lh', 'rh']
+    hemis = np.atleast_1d(hemi)
+
+    # load the surfaces and create the distance graphs
+    tris, vert, dist = {}, {}, {}
+    for hemi in set(hemis):
+        surf_fname = op.join(subjects_dir, subject, 'surf', hemi + '.' +
+                             surface)
+        vert[hemi], tris[hemi] = read_surface(surf_fname)
+        dist[hemi] = mesh_dist(tris[hemi], vert[hemi])
+
+    # create the patches
+    labels = _cortex_parcellation(subject, n_parcel, hemis, vert, dist,
+                                  random_state)
+
+    # add a unique color to each label
+    colors = _n_colors(len(labels))
+    for label, color in zip(labels, colors):
+        label.color = color
+
+    return labels
+
+
+def _cortex_parcellation(subject, n_parcel, hemis, vertices_, graphs,
+                         random_state=None):
+    """Random cortex parcellation."""
+    labels = []
+    rng = check_random_state(random_state)
+    for hemi in set(hemis):
+        parcel_size = len(hemis) * len(vertices_[hemi]) // n_parcel
+        graph = graphs[hemi]  # distance graph
+        n_vertices = len(vertices_[hemi])
+
+        # prepare parcellation
+        parc = np.full(n_vertices, -1, dtype='int32')
+
+        # initialize active sources
+        s = rng.choice(range(n_vertices))
+        label_idx = 0
+        edge = [s]  # queue of vertices to process
+        parc[s] = label_idx
+        label_size = 1
+        rest = len(parc) - 1
+        # grow from sources
+        while rest:
+            # if there are not free neighbors, start new parcel
+            if not edge:
+                rest_idx = np.where(parc < 0)[0]
+                s = rng.choice(rest_idx)
+                edge = [s]
+                label_idx += 1
+                label_size = 1
+                parc[s] = label_idx
+                rest -= 1
+
+            vert_from = edge.pop(0)
+
+            # add neighbors within allowable distance
+            row = graph[vert_from, :]
+            for vert_to, dist in zip(row.indices, row.data):
+                vert_to_label = parc[vert_to]
+
+                # abort if the vertex is already occupied
+                if vert_to_label >= 0:
+                    continue
+
+                # abort if outside of extent
+                if label_size > parcel_size:
+                    label_idx += 1
+                    label_size = 1
+                    edge = [vert_to]
+                    parc[vert_to] = label_idx
+                    rest -= 1
+                    break
+
+                # assign label value
+                parc[vert_to] = label_idx
+                label_size += 1
+                edge.append(vert_to)
+                rest -= 1
+
+        # merging small labels
+        # label connectivity matrix
+        n_labels = label_idx + 1
+        label_sizes = np.empty(n_labels, dtype=int)
+        label_conn = np.zeros([n_labels, n_labels], dtype='bool')
+        for i in range(n_labels):
+            vertices = np.nonzero(parc == i)[0]
+            label_sizes[i] = len(vertices)
+            neighbor_vertices = graph[vertices, :].indices
+            neighbor_labels = np.unique(np.array(parc[neighbor_vertices]))
+            label_conn[i, neighbor_labels] = 1
+        np.fill_diagonal(label_conn, 0)
+
+        # merging
+        label_id = range(n_labels)
+        while n_labels > n_parcel // len(hemis):
+            # smallest label and its smallest neighbor
+            i = np.argmin(label_sizes)
+            neighbors = np.nonzero(label_conn[i, :])[0]
+            j = neighbors[np.argmin(label_sizes[neighbors])]
+
+            # merging two labels
+            label_conn[j, :] += label_conn[i, :]
+            label_conn[:, j] += label_conn[:, i]
+            label_conn = np.delete(label_conn, i, 0)
+            label_conn = np.delete(label_conn, i, 1)
+            label_conn[j, j] = 0
+            label_sizes[j] += label_sizes[i]
+            label_sizes = np.delete(label_sizes, i, 0)
+            n_labels -= 1
+            vertices = np.nonzero(parc == label_id[i])[0]
+            parc[vertices] = label_id[j]
+            label_id = np.delete(label_id, i, 0)
+
+        # convert parc to labels
+        for i in xrange(n_labels):
+            vertices = np.nonzero(parc == label_id[i])[0]
+            name = 'label_' + str(i)
+            label_ = Label(vertices, hemi=hemi, name=name, subject=subject)
+            labels.append(label_)
+
+    return labels
+
+
 def _read_annot(fname):
     """Read a Freesurfer annotation from a .annot file.
 
@@ -1790,7 +1960,7 @@ def read_labels_from_annot(subject, parc='aparc', hemi='both',
     labels : list of Label
         The labels, sorted by label name (ascending).
     """
-    logger.info('Reading labels from parcellation..')
+    logger.info('Reading labels from parcellation...')
 
     subjects_dir = get_subjects_dir(subjects_dir)
 
@@ -1845,7 +2015,6 @@ def read_labels_from_annot(subject, parc='aparc', hemi='both',
             msg += ' Maybe the regular expression %r did not match?' % regexp
         raise RuntimeError(msg)
 
-    logger.info('[done]')
     return labels
 
 
@@ -1886,7 +2055,7 @@ def _write_annot(fname, annot, ctab, names):
         # write dummy color table name
         table_name = 'MNE-Python Colortable'
         np.array(len(table_name), dtype='>i4').tofile(fid)
-        np.fromstring(table_name, dtype=np.uint8).tofile(fid)
+        np.frombuffer(table_name.encode('ascii'), dtype=np.uint8).tofile(fid)
 
         # number of entries to write
         np.array(n_entries, dtype='>i4').tofile(fid)
@@ -1895,7 +2064,7 @@ def _write_annot(fname, annot, ctab, names):
         for ii, (name, color) in enumerate(zip(names, ctab)):
             np.array(ii, dtype='>i4').tofile(fid)
             np.array(len(name), dtype='>i4').tofile(fid)
-            np.fromstring(name, dtype=np.uint8).tofile(fid)
+            np.frombuffer(name.encode('ascii'), dtype=np.uint8).tofile(fid)
             np.array(color[:4], dtype='>i4').tofile(fid)
 
 
@@ -1935,7 +2104,7 @@ def write_labels_to_annot(labels, subject=None, parc=None, overwrite=False,
     Vertices that are not covered by any of the labels are assigned to a label
     named "unknown".
     """
-    logger.info('Writing labels to parcellation..')
+    logger.info('Writing labels to parcellation...')
 
     subjects_dir = get_subjects_dir(subjects_dir)
 
@@ -2119,5 +2288,3 @@ def write_labels_to_annot(labels, subject=None, parc=None, overwrite=False,
     for fname, annot, ctab, hemi_names in to_save:
         logger.info('   writing %d labels to %s' % (len(hemi_names), fname))
         _write_annot(fname, annot, ctab, hemi_names)
-
-    logger.info('[done]')

@@ -15,6 +15,7 @@ is ordered based on the locations of the regions.
 import os.path as op
 import numpy as np
 import mne
+import matplotlib.pyplot as plt
 
 from mne.datasets import sample
 from mne import setup_volume_source_space, setup_source_space
@@ -99,8 +100,7 @@ lambda2 = 1.0 / snr ** 2
 
 # Compute inverse operator
 inverse_operator = make_inverse_operator(raw.info, fwd, noise_cov,
-                                         loose=None, depth=None,
-                                         fixed=False)
+                                         depth=None, fixed=False)
 
 
 stcs = apply_inverse_epochs(epochs, inverse_operator, lambda2, inv_method,
@@ -148,11 +148,12 @@ for name in lh_labels:
     label_ypos_lh.append(ypos)
 try:
     idx = label_names.index('Brain-Stem')
+except ValueError:
+    pass
+else:
     ypos = np.mean(labels[idx].pos[:, 1])
     lh_labels.append('Brain-Stem')
     label_ypos_lh.append(ypos)
-except ValueError:
-    pass
 
 
 # Reorder the labels based on their location
@@ -173,13 +174,19 @@ node_angles = circular_layout(label_names, node_order, start_pos=90,
 # Plot the graph using node colors from the FreeSurfer parcellation. We only
 # show the 300 strongest connections.
 conmat = con[:, :, 0]
+fig = plt.figure(num=None, figsize=(8, 8), facecolor='black')
 plot_connectivity_circle(conmat, label_names, n_lines=300,
                          node_angles=node_angles, node_colors=node_colors,
                          title='All-to-All Connectivity left-Auditory '
-                               'Condition (PLI)')
+                         'Condition (PLI)', fig=fig, interactive=False)
 
-# Uncomment the following line to save the figure
-'''
-import matplotlib.pyplot as plt
-plt.savefig('circle.png', facecolor='black')
-'''
+###############################################################################
+# Save the figure (optional)
+# --------------------------
+#
+# By default matplotlib does not save using the facecolor, even though this was
+# set when the figure was generated. If not set via savefig, the labels, title,
+# and legend will be cut off from the output png file.
+
+# fname_fig = data_path + '/MEG/sample/plot_mixed_connect.png'
+# plt.savefig(fname_fig, facecolor='black')

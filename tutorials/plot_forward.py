@@ -18,7 +18,7 @@ data_path = sample.data_path()
 
 # the raw file containing the channel location + types
 raw_fname = data_path + '/MEG/sample/sample_audvis_raw.fif'
-# The paths to freesurfer reconstructions
+# The paths to Freesurfer reconstructions
 subjects_dir = data_path + '/subjects'
 subject = 'sample'
 
@@ -70,7 +70,7 @@ mne.viz.plot_bem(subject=subject, subjects_dir=subjects_dir,
 # mne_analyze (Unix tools), mne.gui.coregistration (in Python) or mrilab
 # if you're using a Neuromag system.
 #
-# For the Python version see func:`mne.gui.coregistration`
+# For the Python version see :func:`mne.gui.coregistration`
 #
 # Here we assume the coregistration is done, so we just visually check the
 # alignment with the following code.
@@ -79,8 +79,11 @@ mne.viz.plot_bem(subject=subject, subjects_dir=subjects_dir,
 trans = data_path + '/MEG/sample/sample_audvis_raw-trans.fif'
 
 info = mne.io.read_info(raw_fname)
-mne.viz.plot_trans(info, trans, subject=subject, dig=True,
-                   meg_sensors=True, subjects_dir=subjects_dir)
+# Here we look at the dense head, which isn't used for BEM computations but
+# is useful for coregistration.
+mne.viz.plot_alignment(info, trans, subject=subject, dig=True,
+                       meg=['helmet', 'sensors'], subjects_dir=subjects_dir,
+                       surfaces='head-dense')
 
 ###############################################################################
 # Compute Source Space
@@ -114,7 +117,7 @@ from mayavi import mlab  # noqa
 from surfer import Brain  # noqa
 
 brain = Brain('sample', 'lh', 'inflated', subjects_dir=subjects_dir)
-surf = brain._geo
+surf = brain.geo['lh']
 
 vertidx = np.where(src[0]['inuse'])[0]
 
@@ -168,8 +171,8 @@ print("Leadfield size : %d sensors x %d dipoles" % leadfield.shape)
 # the source space `fwd['src']` with cortical orientation constraint
 # we can use the following:
 
-fwd_fixed = mne.convert_forward_solution(fwd, surf_ori=True,
-                                         force_fixed=True)
+fwd_fixed = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True,
+                                         use_cps=True)
 leadfield = fwd_fixed['sol']['data']
 print("Leadfield size : %d sensors x %d dipoles" % leadfield.shape)
 

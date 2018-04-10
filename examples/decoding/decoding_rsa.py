@@ -1,4 +1,7 @@
 """
+
+.. _rsa_noplot:
+
 ====================================
 Representational Similarity Analysis
 ====================================
@@ -94,7 +97,6 @@ raw = concatenate_raws(raws)
 events = mne.find_events(raw, min_duration=.002)
 
 events = events[events[:, 2] <= max_trigger]
-mne.viz.plot_events(events, sfreq=raw.info['sfreq'])
 
 ##############################################################################
 # Epoch data

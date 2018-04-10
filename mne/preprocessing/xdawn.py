@@ -7,7 +7,6 @@
 import numpy as np
 import copy as cp
 from scipy import linalg
-from .ica import _get_fast_dot
 from .. import EvokedArray, Evoked
 from ..cov import Covariance, _regularized_covariance
 from ..decoding import TransformerMixin, BaseEstimator
@@ -100,7 +99,7 @@ def _least_square_evoked(epochs_data, events, tmin, sfreq):
 
 
 def _fit_xdawn(epochs_data, y, n_components, reg=None, signal_cov=None,
-               events=None, tmin=0., sfreq=1.):
+               events=None, tmin=0., sfreq=1., method_params=None, info=None):
     """Fit filters and coefs using Xdawn Algorithm.
 
     Xdawn is a spatial filtering method designed to improve the signal
@@ -118,10 +117,11 @@ def _fit_xdawn(epochs_data, y, n_components, reg=None, signal_cov=None,
     n_components : int (default 2)
         The number of components to decompose the signals signals.
     reg : float | str | None (default None)
-        If not None, allow regularization for covariance estimation
-        if float, shrinkage covariance is used (0 <= shrinkage <= 1).
-        if str, optimal shrinkage using Ledoit-Wolf Shrinkage ('ledoit_wolf')
-        or Oracle Approximating Shrinkage ('oas').
+        If not None (same as ``'empirical'``, default), allow
+        regularization for covariance estimation.
+        If float, shrinkage is used (0 <= shrinkage <= 1).
+        For str options, ``reg`` will be passed as ``method`` to
+        :func:`mne.compute_covariance`.
     signal_cov : None | Covariance | array, shape (n_channels, n_channels)
         The signal covariance used for whitening of the data.
         if None, the covariance is estimated from the epochs signal.
@@ -149,7 +149,8 @@ def _fit_xdawn(epochs_data, y, n_components, reg=None, signal_cov=None,
 
     # Retrieve or compute whitening covariance
     if signal_cov is None:
-        signal_cov = _regularized_covariance(np.hstack(epochs_data), reg)
+        signal_cov = _regularized_covariance(
+            np.hstack(epochs_data), reg, method_params, info)
     elif isinstance(signal_cov, Covariance):
         signal_cov = signal_cov.data
     if not isinstance(signal_cov, np.ndarray) or (
@@ -174,10 +175,14 @@ def _fit_xdawn(epochs_data, y, n_components, reg=None, signal_cov=None,
     for evo, toeplitz in zip(evokeds, toeplitzs):
         # Estimate covariance matrix of the prototype response
         evo = np.dot(evo, toeplitz)
-        evo_cov = np.matrix(_regularized_covariance(evo, reg))
+        evo_cov = _regularized_covariance(evo, reg, method_params, info)
 
         # Fit spatial filters
-        evals, evecs = linalg.eigh(evo_cov, signal_cov)
+        try:
+            evals, evecs = linalg.eigh(evo_cov, signal_cov)
+        except np.linalg.LinAlgError as exp:
+            raise ValueError('Could not compute eigenvalues, ensure '
+                             'proper regularization (%s)' % (exp,))
         evecs = evecs[:, np.argsort(evals)[::-1]]  # sort eigenvectors
         evecs /= np.apply_along_axis(np.linalg.norm, 0, evecs)
         _patterns = np.linalg.pinv(evecs.T)
@@ -207,13 +212,18 @@ class _XdawnTransformer(BaseEstimator, TransformerMixin):
     n_components : int (default 2)
         The number of components to decompose the signals.
     reg : float | str | None (default None)
-        If not None, allow regularization for covariance estimation
-        if float, shrinkage covariance is used (0 <= shrinkage <= 1).
-        if str, optimal shrinkage using Ledoit-Wolf Shrinkage ('ledoit_wolf')
-        or Oracle Approximating Shrinkage ('oas').
+        If not None (same as ``'empirical'``, default), allow
+        regularization for covariance estimation.
+        If float, shrinkage is used (0 <= shrinkage <= 1).
+        For str options, ``reg`` will be passed to ``method`` to
+        :func:`mne.compute_covariance`.
     signal_cov : None | Covariance | array, shape (n_channels, n_channels)
         The signal covariance used for whitening of the data.
         if None, the covariance is estimated from the epochs signal.
+    method_params : dict | None
+        Parameters to pass to :func:`mne.compute_covariance`.
+
+        .. versionadded:: 0.16
 
     Attributes
     ----------
@@ -225,11 +235,13 @@ class _XdawnTransformer(BaseEstimator, TransformerMixin):
         The Xdawn patterns used to restore the signals for each event type.
     """
 
-    def __init__(self, n_components=2, reg=None, signal_cov=None):
+    def __init__(self, n_components=2, reg=None, signal_cov=None,
+                 method_params=None):
         """Init."""
         self.n_components = n_components
         self.signal_cov = signal_cov
         self.reg = reg
+        self.method_params = method_params
 
     def fit(self, X, y=None):
         """Fit Xdawn spatial filters.
@@ -252,7 +264,7 @@ class _XdawnTransformer(BaseEstimator, TransformerMixin):
         self.classes_ = np.unique(y)
         self.filters_, self.patterns_, _ = _fit_xdawn(
             X, y, n_components=self.n_components, reg=self.reg,
-            signal_cov=self.signal_cov)
+            signal_cov=self.signal_cov, method_params=self.method_params)
         return self
 
     def transform(self, X):
@@ -307,8 +319,7 @@ class _XdawnTransformer(BaseEstimator, TransformerMixin):
                 self.n_components * len(self.classes_), n_comp))
 
         # Transform
-        fast_dot = _get_fast_dot()
-        return fast_dot(self.patterns_.T, X).transpose(1, 0, 2)
+        return np.dot(self.patterns_.T, X).transpose(1, 0, 2)
 
     def _check_Xy(self, X, y=None):
         """Check X and y types and dimensions."""
@@ -345,10 +356,11 @@ class Xdawn(_XdawnTransformer):
         correcting for event overlaps if any. If 'auto', then
         overlapp_correction = True if the events do overlap.
     reg : float | str | None (default None)
-        if not None, allow regularization for covariance estimation
-        if float, shrinkage covariance is used (0 <= shrinkage <= 1).
-        if str, optimal shrinkage using Ledoit-Wolf Shrinkage ('ledoit_wolf')
-        or Oracle Approximating Shrinkage ('oas').
+        If not None (same as ``'empirical'``, default), allow
+        regularization for covariance estimation.
+        If float, shrinkage is used (0 <= shrinkage <= 1).
+        For str options, ``reg`` will be passed as ``method`` to
+        :func:`mne.compute_covariance`.
 
     Attributes
     ----------
@@ -445,8 +457,9 @@ class Xdawn(_XdawnTransformer):
 
         # Main fitting function
         filters, patterns, evokeds = _fit_xdawn(
-            X, y,  n_components=n_components, reg=self.reg,
-            signal_cov=self.signal_cov, events=events, tmin=tmin, sfreq=sfreq)
+            X, y, n_components=n_components, reg=self.reg,
+            signal_cov=self.signal_cov, events=events, tmin=tmin, sfreq=sfreq,
+            method_params=self.method_params, info=epochs.info)
 
         # Re-order filters and patterns according to event_id
         filters = filters.reshape(-1, n_components, filters.shape[-1])
@@ -463,23 +476,27 @@ class Xdawn(_XdawnTransformer):
             self.evokeds_[eid] = evoked
         return self
 
-    def transform(self, epochs):
+    def transform(self, inst):
         """Apply Xdawn dim reduction.
 
         Parameters
         ----------
-        epochs : Epochs | ndarray, shape (n_epochs, n_channels, n_times)
+        inst : Epochs | Evoked | ndarray, shape ([n_epochs, ]n_channels, n_times)
             Data on which Xdawn filters will be applied.
 
         Returns
         -------
-        X : ndarray, shape (n_epochs, n_components * n_event_types, n_times)
+        X : ndarray, shape ([n_epochs, ]n_components * n_event_types, n_times)
             Spatially filtered signals.
-        """
-        if isinstance(epochs, BaseEpochs):
-            X = epochs.get_data()
-        elif isinstance(epochs, np.ndarray):
-            X = epochs
+        """  # noqa: E501
+        if isinstance(inst, BaseEpochs):
+            X = inst.get_data()
+        elif isinstance(inst, Evoked):
+            X = inst.data
+        elif isinstance(inst, np.ndarray):
+            X = inst
+            if X.ndim not in (2, 3):
+                raise ValueError('X must be 2D or 3D, got %s' % (X.ndim,))
         else:
             raise ValueError('Data input must be of Epoch type or numpy array')
 
@@ -487,7 +504,9 @@ class Xdawn(_XdawnTransformer):
                    for filt in itervalues(self.filters_)]
         filters = np.concatenate(filters, axis=0)
         X = np.dot(filters, X)
-        return X.transpose((1, 0, 2))
+        if X.ndim == 3:
+            X = X.transpose((1, 0, 2))
+        return X
 
     def apply(self, inst, event_id=None, include=None, exclude=None):
         """Remove selected components from the signal.
@@ -600,12 +619,10 @@ class Xdawn(_XdawnTransformer):
 
     def _pick_sources(self, data, include, exclude, eid):
         """Aux method."""
-        fast_dot = _get_fast_dot()
-
         logger.info('Transforming to Xdawn space')
 
         # Apply unmixing
-        sources = fast_dot(self.filters_[eid].T, data)
+        sources = np.dot(self.filters_[eid].T, data)
 
         if include not in (None, list()):
             mask = np.ones(len(sources), dtype=np.bool)
@@ -617,7 +634,7 @@ class Xdawn(_XdawnTransformer):
             sources[exclude_] = 0.
             logger.info('Zeroing out %i Xdawn components' % len(exclude_))
         logger.info('Inverse transforming to sensor space')
-        data = fast_dot(self.patterns_[eid], sources)
+        data = np.dot(self.patterns_[eid], sources)
 
         return data
 

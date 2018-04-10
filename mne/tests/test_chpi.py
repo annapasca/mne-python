@@ -3,19 +3,21 @@
 # License: BSD (3-clause)
 
 import os.path as op
+import warnings
+
 import numpy as np
 from numpy.testing import assert_allclose
 from nose.tools import assert_raises, assert_equal, assert_true
-import warnings
-
+import pytest
 
 from mne import (pick_types, Dipole, make_sphere_model, make_forward_dipole,
                  pick_info)
-from mne.io import read_raw_fif, read_raw_artemis123, read_info, RawArray
+from mne.io import (read_raw_fif, read_raw_artemis123, read_raw_ctf, read_info,
+                    RawArray)
 from mne.io.constants import FIFF
 from mne.chpi import (_calculate_chpi_positions, _calculate_chpi_coil_locs,
-                      head_pos_to_trans_rot_t, read_head_pos,
-                      write_head_pos, filter_chpi,
+                      _calculate_head_pos_ctf, head_pos_to_trans_rot_t,
+                      read_head_pos, write_head_pos, filter_chpi,
                       _get_hpi_info, _get_hpi_initial_fit)
 from mne.fixes import assert_raises_regex
 from mne.transforms import rot_to_quat, _angle_between_quats
@@ -38,6 +40,8 @@ sss_fif_fname = op.join(data_path, 'SSS', 'test_move_anon_raw_sss.fif')
 sss_hpisubt_fname = op.join(data_path, 'SSS', 'test_move_anon_hpisubt_raw.fif')
 chpi5_fif_fname = op.join(data_path, 'SSS', 'chpi5_raw.fif')
 chpi5_pos_fname = op.join(data_path, 'SSS', 'chpi5_raw_mc.pos')
+ctf_chpi_fname = op.join(data_path, 'CTF', 'testdata_ctf_mc.ds')
+ctf_chpi_pos_fname = op.join(data_path, 'CTF', 'testdata_ctf_mc.pos')
 
 art_fname = op.join(data_path, 'ARTEMIS123', 'Artemis_Data_2017-04-04' +
                     '-15h-44m-22s_Motion_Translation-z.bin')
@@ -175,6 +179,7 @@ def _decimate_chpi(raw, decim=4):
     return raw_dec
 
 
+@pytest.mark.slowtest
 @testing.requires_testing_data
 def test_calculate_chpi_positions():
     """Test calculation of cHPI positions."""
@@ -186,7 +191,8 @@ def test_calculate_chpi_positions():
     # something.
     raw_dec = _decimate_chpi(raw, 15)
     with catch_logging() as log:
-        py_quats = _calculate_chpi_positions(raw_dec, verbose='debug')
+        py_quats = _calculate_chpi_positions(raw_dec, t_step_max=1.,
+                                             verbose='debug')
     assert_true(log.getvalue().startswith('HPIFIT'))
     _assert_quats(py_quats, mf_quats, dist_tol=0.004, angle_tol=2.5)
 
@@ -194,19 +200,25 @@ def test_calculate_chpi_positions():
     raw_no_chpi = read_raw_fif(test_fif_fname)
     assert_raises(RuntimeError, _calculate_chpi_positions, raw_no_chpi)
     raw_bad = raw.copy()
-    for d in raw_bad.info['dig']:
-        if d['kind'] == FIFF.FIFFV_POINT_HPI:
-            d['coord_frame'] = 999
-            break
+    del raw_bad.info['hpi_meas'][0]['hpi_coils'][0]['coil_freq']
     assert_raises(RuntimeError, _calculate_chpi_positions, raw_bad)
     raw_bad = raw.copy()
     for d in raw_bad.info['dig']:
         if d['kind'] == FIFF.FIFFV_POINT_HPI:
+            d['coord_frame'] = FIFF.FIFFV_COORD_UNKNOWN
+            break
+    assert_raises(RuntimeError, _calculate_chpi_positions, raw_bad)
+    for d in raw_bad.info['dig']:
+        if d['kind'] == FIFF.FIFFV_POINT_HPI:
+            d['coord_frame'] = FIFF.FIFFV_COORD_HEAD
             d['r'] = np.ones(3)
     raw_bad.crop(0, 1.)
+    picks = np.concatenate([np.arange(306, len(raw_bad.ch_names)),
+                            pick_types(raw_bad.info, meg=True)[::16]])
+    raw_bad.pick_channels([raw_bad.ch_names[pick] for pick in picks])
     with warnings.catch_warnings(record=True):  # bad pos
         with catch_logging() as log_file:
-            _calculate_chpi_positions(raw_bad, t_step_min=5., verbose=True)
+            _calculate_chpi_positions(raw_bad, t_step_min=1., verbose=True)
     # ignore HPI info header and [done] footer
     assert_true('0/5 good' in log_file.getvalue().strip().split('\n')[-2])
 
@@ -219,7 +231,8 @@ def test_calculate_chpi_positions():
     raw = read_raw_artemis123(art_fname, preload=True)
     mf_quats = read_head_pos(art_mc_fname)
     with catch_logging() as log:
-        py_quats = _calculate_chpi_positions(raw, verbose='debug')
+        py_quats = _calculate_chpi_positions(raw, t_step_min=2.,
+                                             verbose='debug')
     _assert_quats(py_quats, mf_quats, dist_tol=0.004, angle_tol=2.5)
 
 
@@ -239,6 +252,7 @@ def test_calculate_chpi_positions_on_chpi5_in_one_second_steps():
     _assert_quats(py_quats, mf_quats, dist_tol=0.0008, angle_tol=.5)
 
 
+@pytest.mark.slowtest
 @testing.requires_testing_data
 def test_calculate_chpi_positions_on_chpi5_in_shorter_steps():
     """Comparing estimated cHPI positions with MF results (smaller steps)."""
@@ -326,7 +340,7 @@ def test_simulate_calculate_chpi_positions():
     raw = simulate_raw(raw, stc, None, fwd['src'], sphere, cov=None,
                        blink=False, ecg=False, chpi=True,
                        head_pos=dev_head_pos, mindist=1.0, interp='zero',
-                       verbose=None)
+                       verbose=None, use_cps=True)
 
     quats = _calculate_chpi_positions(
         raw, t_step_min=raw.info['sfreq'] * head_pos_sfreq_quotient,
@@ -402,6 +416,18 @@ def test_chpi_subtraction():
         filter_chpi(raw, verbose=True)
     assert_raises(ValueError, filter_chpi, raw, t_window=-1)
     assert_true('2 cHPI' in log.getvalue())
+
+
+@testing.requires_testing_data
+def test_calculate_head_pos_ctf():
+    """Test extracting of cHPI positions from ctf data."""
+    raw = read_raw_ctf(ctf_chpi_fname)
+    quats = _calculate_head_pos_ctf(raw)
+    mc_quats = read_head_pos(ctf_chpi_pos_fname)
+    _assert_quats(quats, mc_quats, dist_tol=0.004, angle_tol=2.5)
+
+    raw = read_raw_fif(ctf_fname)
+    assert_raises(RuntimeError, _calculate_head_pos_ctf, raw)
 
 
 run_tests_if_main()

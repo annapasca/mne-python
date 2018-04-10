@@ -7,6 +7,8 @@ from __future__ import print_function
 # License: BSD (3-clause)
 
 import atexit
+from collections import Iterable
+from contextlib import contextmanager
 from distutils.version import LooseVersion
 from functools import wraps
 import ftplib
@@ -29,6 +31,7 @@ import sys
 import tempfile
 import time
 import traceback
+from unittest import SkipTest
 import warnings
 import webbrowser
 
@@ -76,7 +79,7 @@ _doc_special_members = ('__contains__', '__getitem__', '__iter__', '__len__',
 # RANDOM UTILITIES
 
 
-def _ensure_int(x, name, must_be='an int'):
+def _ensure_int(x, name='unknown', must_be='an int'):
     """Ensure a variable is an integer."""
     # This is preferred over numbers.Integral, see:
     # https://github.com/scipy/scipy/pull/7351#issuecomment-299713159
@@ -87,10 +90,10 @@ def _ensure_int(x, name, must_be='an int'):
     return x
 
 
-def _pl(x):
+def _pl(x, non_pl=''):
     """Determine if plural should be used."""
     len_x = x if isinstance(x, (integer_types, np.generic)) else len(x)
-    return '' if len_x == 1 else 's'
+    return non_pl if len_x == 1 else 's'
 
 
 def _explain_exception(start=-1, stop=None, prefix='> '):
@@ -155,7 +158,7 @@ def object_hash(x, h=None):
     elif isinstance(x, (string_types, float, int, type(None))):
         h.update(str(type(x)).encode('utf-8'))
         h.update(str(x).encode('utf-8'))
-    elif isinstance(x, np.ndarray):
+    elif isinstance(x, (np.ndarray, np.number, np.bool_)):
         x = np.asarray(x)
         h.update(str(x.shape).encode('utf-8'))
         h.update(str(x.dtype).encode('utf-8'))
@@ -352,21 +355,26 @@ def warn(message, category=RuntimeWarning):
     import mne
     root_dir = op.dirname(mne.__file__)
     frame = None
-    stack = inspect.stack()
-    last_fname = ''
-    for fi, frame in enumerate(stack):
-        fname, lineno = frame[1:3]
-        if fname == '<string>' and last_fname == 'utils.py':  # in verbose dec
-            last_fname = fname
-            continue
-        # treat tests as scripts
-        # and don't capture unittest/case.py (assert_raises)
-        if not (fname.startswith(root_dir) or
-                ('unittest' in fname and 'case' in fname)) or \
-                op.basename(op.dirname(fname)) == 'tests':
-            break
-        last_fname = op.basename(fname)
     if logger.level <= logging.WARN:
+        last_fname = ''
+        frame = inspect.currentframe()
+        while frame:
+            fname = frame.f_code.co_filename
+            lineno = frame.f_lineno
+            # in verbose dec
+            if fname == '<string>' and last_fname == 'utils.py':
+                last_fname = fname
+                frame = frame.f_back
+                continue
+            # treat tests as scripts
+            # and don't capture unittest/case.py (assert_raises)
+            if not (fname.startswith(root_dir) or
+                    ('unittest' in fname and 'case' in fname)) or \
+                    op.basename(op.dirname(fname)) == 'tests':
+                break
+            last_fname = op.basename(fname)
+            frame = frame.f_back
+        del frame
         # We need to use this instead of warn(message, category, stacklevel)
         # because we move out of the MNE stack, so warnings won't properly
         # recognize the module name (and our warnings.simplefilter will fail)
@@ -740,21 +748,6 @@ class use_log_level(object):
         set_log_level(self.old_level)
 
 
-@nottest
-def slow_test(f):
-    """Mark slow tests (decorator)."""
-    f.slow_test = True
-    return f
-
-
-@nottest
-def ultra_slow_test(f):
-    """Mark ultra slow tests (decorator)."""
-    f.ultra_slow_test = True
-    f.slow_test = True
-    return f
-
-
 def has_nibabel(vox2ras_tkr=False):
     """Determine if nibabel is installed.
 
@@ -792,9 +785,10 @@ def has_freesurfer():
 
 def requires_nibabel(vox2ras_tkr=False):
     """Check for nibabel."""
+    import pytest
     extra = ' with vox2ras_tkr support' if vox2ras_tkr else ''
-    return np.testing.dec.skipif(not has_nibabel(vox2ras_tkr),
-                                 'Requires nibabel%s' % extra)
+    return pytest.mark.skipif(not has_nibabel(vox2ras_tkr),
+                              reason='Requires nibabel%s' % extra)
 
 
 def buggy_mkl_svd(function):
@@ -805,7 +799,6 @@ def buggy_mkl_svd(function):
             return function(*args, **kwargs)
         except np.linalg.LinAlgError as exp:
             if 'SVD did not converge' in str(exp):
-                from nose.plugins.skip import SkipTest
                 msg = 'Intel MKL SVD convergence error detected, skipping test'
                 warn(msg)
                 raise SkipTest(msg)
@@ -813,30 +806,28 @@ def buggy_mkl_svd(function):
     return dec
 
 
-def requires_version(library, min_version):
+def requires_version(library, min_version='0.0'):
     """Check for a library version."""
-    return np.testing.dec.skipif(not check_version(library, min_version),
-                                 'Requires %s version >= %s'
-                                 % (library, min_version))
+    import pytest
+    return pytest.mark.skipif(not check_version(library, min_version),
+                              reason=('Requires %s version >= %s'
+                                      % (library, min_version)))
 
 
 def requires_module(function, name, call=None):
     """Skip a test if package is not available (decorator)."""
+    import pytest
     call = ('import %s' % name) if call is None else call
+    reason = 'Test %s skipped, requires %s.' % (function.__name__, name)
     try:
-        from nose.plugins.skip import SkipTest
-    except ImportError:
-        SkipTest = AssertionError
-
-    @wraps(function)
-    def dec(*args, **kwargs):  # noqa: D102
-        try:
-            exec(call) in globals(), locals()
-        except Exception as exc:
-            raise SkipTest('Test %s skipped, requires %s. Got exception (%s)'
-                           % (function.__name__, name, exc))
-        return function(*args, **kwargs)
-    return dec
+        exec(call) in globals(), locals()
+    except Exception as exc:
+        if len(str(exc)) > 0 and str(exc) != 'No module named %s' % name:
+            reason += ' Got exception (%s)' % (exc,)
+        skip = True
+    else:
+        skip = False
+    return pytest.mark.skipif(skip, reason=reason)(function)
 
 
 def copy_doc(source):
@@ -1025,14 +1016,6 @@ if version < required_version:
     raise ImportError
 """
 
-_sklearn_0_15_call = """
-required_version = '0.15'
-import sklearn
-version = LooseVersion(sklearn.__version__)
-if version < required_version:
-    raise ImportError
-"""
-
 _mayavi_call = """
 with warnings.catch_warnings(record=True):  # traits
     from mayavi import mlab
@@ -1061,8 +1044,6 @@ if not has_nibabel() and not has_freesurfer():
 
 requires_pandas = partial(requires_module, name='pandas', call=_pandas_call)
 requires_sklearn = partial(requires_module, name='sklearn', call=_sklearn_call)
-requires_sklearn_0_15 = partial(requires_module, name='sklearn',
-                                call=_sklearn_0_15_call)
 requires_mayavi = partial(requires_module, name='mayavi', call=_mayavi_call)
 requires_mne = partial(requires_module, name='MNE-C', call=_mne_call)
 requires_freesurfer = partial(requires_module, name='Freesurfer',
@@ -1074,13 +1055,10 @@ requires_fs_or_nibabel = partial(requires_module, name='nibabel or Freesurfer',
 
 requires_tvtk = partial(requires_module, name='TVTK',
                         call='from tvtk.api import tvtk')
-requires_statsmodels = partial(requires_module, name='statsmodels')
 requires_pysurfer = partial(requires_module, name='PySurfer',
                             call="""import warnings
 with warnings.catch_warnings(record=True):
     from surfer import Brain""")
-requires_PIL = partial(requires_module, name='PIL',
-                       call='from PIL import Image')
 requires_good_network = partial(
     requires_module, name='good network connection',
     call='if int(os.environ.get("MNE_SKIP_NETWORK_TESTS", 0)):\n'
@@ -1166,6 +1144,25 @@ def _import_mlab():
     return mlab
 
 
+@contextmanager
+def traits_test_context():
+    """Context to raise errors in trait handlers."""
+    from traits.api import push_exception_handler
+
+    push_exception_handler(reraise_exceptions=True)
+    yield
+    push_exception_handler(reraise_exceptions=False)
+
+
+def traits_test(test_func):
+    """Raise errors in trait handlers (decorator)."""
+    @wraps(test_func)
+    def dec(*args, **kwargs):
+        with traits_test_context():
+            return test_func(*args, **kwargs)
+    return dec
+
+
 @verbose
 def run_subprocess(command, verbose=None, *args, **kwargs):
     """Run command using subprocess.Popen.
@@ -1193,11 +1190,12 @@ def run_subprocess(command, verbose=None, *args, **kwargs):
     stderr : str
         Stderr returned by the process.
     """
-    for stdxxx, sys_stdxxx in (['stderr', sys.stderr],
-                               ['stdout', sys.stdout]):
-        if stdxxx not in kwargs:
+    for stdxxx, sys_stdxxx, thresh in (
+            ['stderr', sys.stderr, logging.ERROR],
+            ['stdout', sys.stdout, logging.WARNING]):
+        if stdxxx not in kwargs and logger.level >= thresh:
             kwargs[stdxxx] = subprocess.PIPE
-        elif kwargs[stdxxx] is sys_stdxxx:
+        elif kwargs.get(stdxxx, sys_stdxxx) is sys_stdxxx:
             if isinstance(sys_stdxxx, StringIO):
                 # nose monkey patches sys.stderr and sys.stdout to StringIO
                 kwargs[stdxxx] = subprocess.PIPE
@@ -1227,15 +1225,10 @@ def run_subprocess(command, verbose=None, *args, **kwargs):
         logger.error('Command not found: %s' % command_name)
         raise
     stdout_, stderr = p.communicate()
-    stdout_ = '' if stdout_ is None else stdout_.decode('utf-8')
-    stderr = '' if stderr is None else stderr.decode('utf-8')
-
-    if stdout_.strip():
-        logger.info("stdout:\n%s" % stdout_)
-    if stderr.strip():
-        logger.info("stderr:\n%s" % stderr)
-
+    stdout_ = u'' if stdout_ is None else stdout_.decode('utf-8')
+    stderr = u'' if stderr is None else stderr.decode('utf-8')
     output = (stdout_, stderr)
+
     if p.returncode:
         print(output)
         err_fun = subprocess.CalledProcessError.__init__
@@ -1393,7 +1386,10 @@ def _get_extra_data_path(home_dir=None):
     if home_dir is None:
         # this has been checked on OSX64, Linux64, and Win32
         if 'nt' == os.name.lower():
-            home_dir = os.getenv('APPDATA')
+            if op.isdir(op.join(os.getenv('APPDATA'), '.mne')):
+                home_dir = os.getenv('APPDATA')
+            else:
+                home_dir = os.getenv('USERPROFILE')
         else:
             # This is a more robust way of getting the user's home folder on
             # Linux platforms (not sure about OSX, Unix or BSD) than checking
@@ -1431,7 +1427,7 @@ def get_config_path(home_dir=None):
     -------
     config_path : str
         The path to the mne-python configuration file. On windows, this
-        will be '%APPDATA%\.mne\mne-python.json'. On every other
+        will be '%USERPROFILE%\.mne\mne-python.json'. On every other
         system, this will be ~/.mne/mne-python.json.
     """
     val = op.join(_get_extra_data_path(home_dir=home_dir),
@@ -1486,15 +1482,22 @@ known_config_types = (
     'MNE_COREG_GUESS_MRI_SUBJECT',
     'MNE_COREG_HEAD_HIGH_RES',
     'MNE_COREG_HEAD_OPACITY',
+    'MNE_COREG_INTERACTION',
+    'MNE_COREG_MARK_INSIDE',
     'MNE_COREG_PREPARE_BEM',
+    'MNE_COREG_PROJECT_EEG',
+    'MNE_COREG_ORIENT_TO_SURFACE',
     'MNE_COREG_SCALE_LABELS',
-    'MNE_COREG_SCENE_HEIGHT',
-    'MNE_COREG_SCENE_WIDTH',
+    'MNE_COREG_SCALE_BY_DISTANCE',
+    'MNE_COREG_SCENE_SCALE',
+    'MNE_COREG_WINDOW_HEIGHT',
+    'MNE_COREG_WINDOW_WIDTH',
     'MNE_COREG_SUBJECTS_DIR',
     'MNE_CUDA_IGNORE_PRECISION',
     'MNE_DATA',
     'MNE_DATASETS_BRAINSTORM_PATH',
     'MNE_DATASETS_EEGBCI_PATH',
+    'MNE_DATASETS_HF_SEF_PATH',
     'MNE_DATASETS_MEGSIM_PATH',
     'MNE_DATASETS_MISC_PATH',
     'MNE_DATASETS_MTRF_PATH',
@@ -1505,7 +1508,9 @@ known_config_types = (
     'MNE_DATASETS_SPM_FACE_PATH',
     'MNE_DATASETS_TESTING_PATH',
     'MNE_DATASETS_VISUAL_92_CATEGORIES_PATH',
+    'MNE_DATASETS_KILOWORD_PATH',
     'MNE_DATASETS_FIELDTRIP_CMC_PATH',
+    'MNE_DATASETS_PHANTOM_4DBTI_PATH',
     'MNE_FORCE_SERIAL',
     'MNE_KIT2FIFF_STIM_CHANNELS',
     'MNE_KIT2FIFF_STIM_CHANNEL_CODING',
@@ -1713,13 +1718,12 @@ class ProgressBar(object):
                  progress_character='.', spinner=False,
                  verbose_bool=True):  # noqa: D102
         self.cur_value = initial_value
-        if isinstance(max_value, (float, int)):
-            self.max_value = max_value
-            self.iterable = None
-        else:
-            # input is an iterable
+        if isinstance(max_value, Iterable):
             self.max_value = len(max_value)
             self.iterable = max_value
+        else:
+            self.max_value = float(max_value)
+            self.iterable = None
         self.mesg = mesg
         self.max_chars = max_chars
         self.progress_character = progress_character
@@ -1727,6 +1731,8 @@ class ProgressBar(object):
         self.spinner_index = 0
         self.n_spinner = len(self.spinner_symbols)
         self._do_print = verbose_bool
+        self.cur_time = time.time()
+        self.cur_rate = 0
 
     def update(self, cur_value, mesg=None):
         """Update progressbar with current value of process.
@@ -1742,9 +1748,15 @@ class ProgressBar(object):
             last message provided will be used.  To clear the current message,
             pass a null string, ''.
         """
+        cur_time = time.time()
+        cur_rate = ((cur_value - self.cur_value) /
+                    max(float(cur_time - self.cur_time), 1e-6))
+        # cur_rate += 0.9 * self.cur_rate
         # Ensure floating-point division so we can get fractions of a percent
         # for the progressbar.
+        self.cur_time = cur_time
         self.cur_value = cur_value
+        self.cur_rate = cur_rate
         progress = min(float(self.cur_value) / self.max_value, 1.)
         num_chars = int(progress * self.max_chars)
         num_left = self.max_chars - num_chars
@@ -1752,8 +1764,10 @@ class ProgressBar(object):
         # Update the message
         if mesg is not None:
             if mesg == 'file_sizes':
-                mesg = '(%s / %s)' % (sizeof_fmt(self.cur_value),
-                                      sizeof_fmt(self.max_value))
+                mesg = '(%s / %s, %s/s)' % (
+                    sizeof_fmt(self.cur_value).rjust(8),
+                    sizeof_fmt(self.max_value).rjust(8),
+                    sizeof_fmt(cur_rate).rjust(8))
             self.mesg = mesg
 
         # The \r tells the cursor to return to the beginning of the line rather
@@ -1787,8 +1801,7 @@ class ProgressBar(object):
             last message provided will be used.  To clear the current message,
             pass a null string, ''.
         """
-        self.cur_value += increment_value
-        self.update(self.cur_value, mesg)
+        self.update(self.cur_value + increment_value, mesg)
 
     def __iter__(self):
         """Iterate to auto-increment the pbar with 1."""
@@ -1799,7 +1812,8 @@ class ProgressBar(object):
             self.update_with_increment_value(1)
 
 
-def _get_ftp(url, temp_file_name, initial_size, file_size, verbose_bool):
+def _get_ftp(url, temp_file_name, initial_size, file_size, timeout,
+             verbose_bool):
     """Safely (resume a) download to a file from FTP."""
     # Adapted from: https://pypi.python.org/pypi/fileDownloader.py
     # but with changes
@@ -1811,9 +1825,9 @@ def _get_ftp(url, temp_file_name, initial_size, file_size, verbose_bool):
 
     data = ftplib.FTP()
     if parsed_url.port is not None:
-        data.connect(parsed_url.hostname, parsed_url.port)
+        data.connect(parsed_url.hostname, parsed_url.port, timeout=timeout)
     else:
-        data.connect(parsed_url.hostname)
+        data.connect(parsed_url.hostname, timeout=timeout)
     data.login()
     if len(server_path) > 1:
         data.cwd(unquoted_server_path)
@@ -1837,14 +1851,15 @@ def _get_ftp(url, temp_file_name, initial_size, file_size, verbose_bool):
     sys.stdout.flush()
 
 
-def _get_http(url, temp_file_name, initial_size, file_size, verbose_bool):
+def _get_http(url, temp_file_name, initial_size, file_size, timeout,
+              verbose_bool):
     """Safely (resume a) download to a file from http(s)."""
     # Actually do the reading
     req = urllib.request.Request(url)
     if initial_size > 0:
         req.headers['Range'] = 'bytes=%s-' % (initial_size,)
     try:
-        response = urllib.request.urlopen(req)
+        response = urllib.request.urlopen(req, timeout=timeout)
     except Exception:
         # There is a problem that may be due to resuming, some
         # servers may not support the "Range" header. Switch
@@ -1853,7 +1868,7 @@ def _get_http(url, temp_file_name, initial_size, file_size, verbose_bool):
                     'rejected the request). Attempting to '
                     'restart downloading the entire file.')
         del req.headers['Range']
-        response = urllib.request.urlopen(req)
+        response = urllib.request.urlopen(req, timeout=timeout)
     total_size = int(response.headers.get('Content-Length', '1').strip())
     if initial_size > 0 and file_size == total_size:
         logger.info('Resuming download failed (resume file size '
@@ -1862,7 +1877,9 @@ def _get_http(url, temp_file_name, initial_size, file_size, verbose_bool):
         initial_size = 0
     total_size += initial_size
     if total_size != file_size:
-        raise RuntimeError('URL could not be parsed properly')
+        raise RuntimeError('URL could not be parsed properly '
+                           '(total size %s != file size %s)'
+                           % (total_size, file_size))
     mode = 'ab' if initial_size > 0 else 'wb'
     progress = ProgressBar(total_size, initial_value=initial_size,
                            max_chars=40, spinner=True, mesg='file_sizes',
@@ -1895,7 +1912,7 @@ def _chunk_write(chunk, local_file, progress):
 
 @verbose
 def _fetch_file(url, file_name, print_destination=True, resume=True,
-                hash_=None, timeout=10., verbose=None):
+                hash_=None, timeout=30., verbose=None):
     """Load requested file, downloading it if needed or requested.
 
     Parameters
@@ -1938,7 +1955,7 @@ def _fetch_file(url, file_name, print_destination=True, resume=True,
         finally:
             u.close()
             del u
-        logger.info('Downloading data from %s (%s)\n'
+        logger.info('Downloading %s (%s)'
                     % (url, sizeof_fmt(file_size)))
 
         # Triage resume
@@ -1957,14 +1974,21 @@ def _fetch_file(url, file_name, print_destination=True, resume=True,
                                'file (%s), cannot resume download'
                                % (sizeof_fmt(initial_size),
                                   sizeof_fmt(file_size)))
-
-        scheme = urllib.parse.urlparse(url).scheme
-        fun = _get_http if scheme in ('http', 'https') else _get_ftp
-        fun(url, temp_file_name, initial_size, file_size, verbose_bool)
+        elif initial_size == file_size:
+            # This should really only happen when a hash is wrong
+            # during dev updating
+            warn('Local file appears to be complete (file_size == '
+                 'initial_size == %s)' % (file_size,))
+        else:
+            # Need to resume or start over
+            scheme = urllib.parse.urlparse(url).scheme
+            fun = _get_http if scheme in ('http', 'https') else _get_ftp
+            fun(url, temp_file_name, initial_size, file_size, timeout,
+                verbose_bool)
 
         # check md5sum
         if hash_ is not None:
-            logger.info('Verifying download hash.')
+            logger.info('Verifying hash %s.' % (hash_,))
             md5 = md5sum(temp_file_name)
             if hash_ != md5:
                 raise RuntimeError('Hash mismatch for downloaded file %s, '
@@ -2152,19 +2176,24 @@ def _check_preload(inst, msg):
     if isinstance(inst, BaseEpochs):
         name = 'epochs'
     if not inst.preload:
-        raise RuntimeError(msg + ' requires %s data to be loaded. Use '
-                           'preload=True (or string) in the constructor or '
-                           '%s.load_data().' % (name, name))
+        raise RuntimeError(
+            "By default, MNE does not load data into main memory to "
+            "conserve ressources. " + msg + ' requires %s data to be loaded. '
+            'Use preload=True (or string) in the constructor or '
+            '%s.load_data().' % (name, name))
 
 
-def _check_pandas_installed():
+def _check_pandas_installed(strict=True):
     """Aux function."""
     try:
-        import pandas as pd
-        return pd
+        import pandas
+        return pandas
     except ImportError:
-        raise RuntimeError('For this method to work the Pandas library is'
-                           ' required.')
+        if strict is True:
+            raise RuntimeError('For this functionality to work the Pandas '
+                               'library is required.')
+        else:
+            return False
 
 
 def _check_pandas_index_arguments(index, defaults):
@@ -2201,8 +2230,8 @@ def _clean_names(names, remove_whitespace=False, before_dash=True):
             name = name.replace(' ', '')
         if '-' in name and before_dash:
             name = name.split('-')[0]
-        if name.endswith('_virtual'):
-            name = name[:-8]
+        if name.endswith('_v'):
+            name = name[:-2]
         cleaned.append(name)
 
     return cleaned
@@ -2401,15 +2430,6 @@ def _time_mask(times, tmin=None, tmax=None, sfreq=None, raise_error=True):
     return mask
 
 
-def _get_fast_dot():
-    """Get fast dot."""
-    try:
-        from sklearn.utils.extmath import fast_dot
-    except ImportError:
-        fast_dot = np.dot
-    return fast_dot
-
-
 def random_permutation(n_samples, random_state=None):
     """Emulate the randperm matlab function.
 
@@ -2450,7 +2470,6 @@ def compute_corr(x, y):
     """Compute pearson correlations between a vector and a matrix."""
     if len(x) == 0 or len(y) == 0:
         raise ValueError('x or y has zero length')
-    fast_dot = _get_fast_dot()
     X = np.array(x, float)
     Y = np.array(y, float)
     X -= X.mean(0)
@@ -2459,7 +2478,7 @@ def compute_corr(x, y):
     # if covariance matrix is fully expanded, Y needs a
     # transpose / broadcasting else Y is correct
     y_sd = Y.std(0, ddof=1)[:, None if X.shape == Y.shape else Ellipsis]
-    return (fast_dot(X.T, Y) / float(len(X) - 1)) / (x_sd * y_sd)
+    return (np.dot(X.T, Y) / float(len(X) - 1)) / (x_sd * y_sd)
 
 
 def grand_average(all_inst, interpolate_bads=True, drop_bads=True):
@@ -2609,8 +2628,12 @@ def sys_info(fid=None, show_paths=False):
     for li, line in enumerate(lines):
         for key in ('lapack', 'blas'):
             if line.startswith('%s_opt_info' % key):
-                libs += ['%s=' % key +
-                         lines[li + 1].split('[')[1].split("'")[1]]
+                lib = lines[li + 1]
+                if 'NOT AVAILABLE' in lib:
+                    lib = 'unknown'
+                else:
+                    lib = lib.split('[')[1].split("'")[1]
+                libs += ['%s=%s' % (key, lib)]
     libs = ', '.join(libs)
     version_texts = dict(pycuda='VERSION_TEXT')
     for mod_name in ('mne', 'numpy', 'scipy', 'matplotlib', '',
@@ -2622,6 +2645,9 @@ def sys_info(fid=None, show_paths=False):
         out += ('%s:' % mod_name).ljust(ljust)
         try:
             mod = __import__(mod_name)
+            if mod_name == 'mayavi':
+                # the real test
+                from mayavi import mlab  # noqa, analysis:ignore
         except Exception:
             out += 'Not found\n'
         else:
@@ -2629,6 +2655,14 @@ def sys_info(fid=None, show_paths=False):
             extra = (' (%s)' % op.dirname(mod.__file__)) if show_paths else ''
             if mod_name == 'numpy':
                 extra = ' {%s}%s' % (libs, extra)
+            elif mod_name == 'matplotlib':
+                extra = ' {backend=%s}%s' % (mod.get_backend(), extra)
+            elif mod_name == 'mayavi':
+                try:
+                    from pyface.qt import qt_api
+                except Exception:
+                    qt_api = 'unknown'
+                extra = ' {qt_api=%s}%s' % (qt_api, extra)
             out += '%s%s\n' % (version, extra)
     print(out, end='', file=fid)
 

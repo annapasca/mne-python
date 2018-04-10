@@ -8,12 +8,13 @@
 import os.path as op
 
 from nose.tools import assert_true, assert_raises, assert_equal, assert_greater
+import pytest
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 from mne import io, Epochs, read_events, pick_types
 from mne.decoding.csp import CSP, _ajd_pham, SPoC
-from mne.utils import requires_sklearn, slow_test
+from mne.utils import requires_sklearn
 
 data_dir = op.join(op.dirname(__file__), '..', '..', 'io', 'tests', 'data')
 raw_fname = op.join(data_dir, 'test_raw.fif')
@@ -46,7 +47,7 @@ def simulate_data(target, n_trials=100, n_channels=10, random_state=42):
     return X, mixing_mat
 
 
-@slow_test
+@pytest.mark.slowtest
 def test_csp():
     """Test Common Spatial Patterns algorithm on epochs
     """
@@ -65,7 +66,8 @@ def test_csp():
     # Init
     assert_raises(ValueError, CSP, n_components='foo', norm_trace=False)
     for reg in ['foo', -0.1, 1.1]:
-        assert_raises(ValueError, CSP, reg=reg, norm_trace=False)
+        csp = CSP(reg=reg, norm_trace=False)
+        assert_raises(ValueError, csp.fit, epochs_data, epochs.events[:, -1])
     for reg in ['oas', 'ledoit_wolf', 0, 0.5, 1.]:
         CSP(reg=reg, norm_trace=False)
     for cov_est in ['foo', None]:
