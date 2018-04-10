@@ -1271,7 +1271,6 @@ def _prepare_forward(forward, info, noise_cov, pca=False, rank=None,
 
 
 @verbose
-
 def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                           fixed='auto', is_mixed=False, limit_depth_chs=True,
                           rank=None, use_cps=True, verbose=None):
