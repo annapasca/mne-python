@@ -564,7 +564,6 @@ def read_forward_solution(fname, include=(), exclude=(), verbose=None):
 @verbose
 def convert_forward_solution(fwd, surf_ori=False, force_fixed=False,
                              copy=True, use_cps=None, verbose=None):
-
     """Convert forward solution between different source orientations.
 
     Parameters
@@ -590,7 +589,6 @@ def convert_forward_solution(fwd, surf_ori=False, force_fixed=False,
     fwd : Forward
         The modified forward solution.
     """
-
     if use_cps is None:
         if force_fixed:
             use_cps = False
