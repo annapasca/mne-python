@@ -467,16 +467,10 @@ class _BaseSourceEstimate(ToDataFrameMixin, TimeMixin):
                 raise ValueError('Vertices must be ordered in increasing '
                                  'order.')
 
-            nvert = [len(v) for v in vertices]
-            if len(vertices) > 2:
-                n_source_cortex = np.sum(nvert[:2])
-                n_source_aseg = np.sum(nvert[2:])
+            n_src = sum([len(v) for v in vertices])
 
-                n_src = n_source_cortex + n_source_aseg*3
-            elif len(vertices) == 1:
+            if len(vertices) == 1:
                 vertices = vertices[0]
-            else:
-                n_src = sum([len(v) for v in vertices])
         elif isinstance(vertices, np.ndarray):
             n_src = len(vertices)
         else:
@@ -3305,7 +3299,6 @@ def extract_label_time_course(stcs, labels, src, mode='mean_flip',
         return_generator = False
     elif isinstance(stcs, MixedSourceEstimate):
         stcs = [stcs]
-        return_several = False
     else:
         return_several = True
 
