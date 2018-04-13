@@ -2,6 +2,7 @@
 
 # Authors: Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
 #          Roman Goj <roman.goj@gmail.com>
+#          Britta Westner <britta.wstnr@gmail.com>
 #
 # License: BSD (3-clause)
 from copy import deepcopy
@@ -18,25 +19,56 @@ from ..minimum_norm.inverse import _get_vertno, combine_xyz, _check_reference
 from ..cov import compute_whitener, compute_covariance
 from ..source_estimate import _make_stc, SourceEstimate
 from ..source_space import label_src_vertno_sel
-from ..utils import logger, verbose, warn, estimate_rank
+from ..utils import logger, verbose, warn, estimate_rank, deprecated
 from .. import Epochs
 from ..externals import six
 from ..channels.channels import _contains_ch_type
 
+depr_message = ("This function is deprecated and will be removed in 0.17, "
+                "please use :func:`make_lcmv` and :func:`%s` instead.")
 
-def _reg_pinv(x, reg):
-    """Compute a regularized pseudoinverse of a square array."""
-    if reg == 0:
-        covrank = estimate_rank(x, tol='auto', norm=False,
-                                return_singular=False)
-        if covrank < x.shape[0]:
-            warn('Covariance matrix is rank-deficient, but no regularization '
+
+def _reg_pinv(x, reg, rcond=1e-15):
+    """Compute a regularized pseudoinverse of a square array.
+
+    Parameters
+    ----------
+    x : ndarray, shape (n, n)
+        Square array to invert.
+    reg : float
+        Regularization parameter.
+    rcond : float | 'auto'
+        Cutoff for small singular values. Singular values smaller (in modulus)
+        than `rcond` * largest_singular_value (again, in modulus) are set to
+        zero. Use 'auto' to attempt to automatically set a sane value. Defaults
+        to 1e-15.
+    """
+    covrank, s = estimate_rank(x, tol='auto', norm=False, return_singular=True)
+
+    # This adds the regularization without using np.eye
+    d = reg * np.trace(x) / len(x)
+    x = x.copy()
+    x.flat[::x.shape[0] + 1] += d
+
+    if covrank < len(x):
+        if reg == 0:
+            warn('Covariance matrix is rank-deficient and no regularization '
                  'is done.')
 
-    # This adds it to the diagonal without using np.eye
-    d = reg * np.trace(x) / len(x)
-    x.flat[::x.shape[0] + 1] += d
-    return linalg.pinv(x), d
+        if rcond == 'auto':
+            # Reduce the toleration of the pseudo-inverse to force a solution
+            s = linalg.svd(x, compute_uv=False)
+            tol = s[covrank - 1:covrank + 1].mean()
+            tol = max(
+                tol,
+                len(x) * linalg.norm(x) * np.finfo(float).eps
+            )
+            rcond = tol / s.max()
+
+    if rcond == 'auto':
+        rcond = 1e-15
+
+    return linalg.pinv(x, rcond=rcond), d
 
 
 def _eig_inv(x, rank):
@@ -153,14 +185,21 @@ def make_lcmv(info, forward, data_cov, reg=0.05, noise_cov=None, label=None,
         gradiometers with magnetometers or EEG with MEG.
     label : Label
         Restricts the LCMV solution to a given label.
-    pick_ori : None | 'normal' | 'max-power'
-        If 'normal', rather than pooling the orientations by taking the norm,
-        only the radial component is kept. If 'max-power', the source
-        orientation that maximizes output source power is chosen.
-        If None, the solution depends on the forward model: if the orientation
-        is fixed, a scalar beamformer is computed. If the forward model has
-        free orientation, a vector beamformer is computed, combining the output
-        for all source orientations.
+    pick_ori : None | 'normal' | 'max-power' | 'vector'
+        For forward solutions with fixed orientation, None (default) must be
+        used and a scalar beamformer is computed. For free-orientation forward
+        solutions, a vector beamformer is computed and:
+
+            None
+                Pools the orientations by taking the norm.
+            'normal'
+                Keeps only the radial component.
+            'max-power'
+                Selects orientations that maximize output source power at
+                each location.
+            'vector'
+                Keeps the currents for each direction separate
+
     rank : None | int | dict
         Specified rank of the noise covariance matrix. If None, the rank is
         detected automatically. If int, the rank is specified for the MEG
@@ -181,8 +220,37 @@ def make_lcmv(info, forward, data_cov, reg=0.05, noise_cov=None, label=None,
 
     Returns
     -------
-    filters | dict
-        Beamformer weights.
+    filters : dict
+        Dictionary containing filter weights from LCMV beamformer.
+        Contains the following keys:
+
+            'weights' : {array}
+                The filter weights of the beamformer.
+            'data_cov' : {instance of Covariance}
+                The data covariance matrix used to compute the beamformer.
+            'noise_cov' : {instance of Covariance | None}
+                The noise covariance matrix used to compute the beamformer.
+            'whitener' : {None | array}
+                Whitening matrix, provided if whitening was applied to the
+                covariance matrix and leadfield during computation of the
+                beamformer weights.
+            'weight_norm' : {'unit-noise-gain'| 'nai' | None}
+                Type of weight normalization used to compute the filter
+                weights.
+            'pick_ori' : {None | 'normal'}
+                Orientation selection used in filter computation.
+            'ch_names' : {list}
+                Channels used to compute the beamformer.
+            'proj' : {array}
+                Projections used to compute the beamformer.
+            'is_ssp' : {bool}
+                If True, projections were applied prior to filter computation.
+            'vertices' : {list}
+                Vertices for which the filter weights were computed.
+            'is_free_ori' : {bool}
+                If True, the filter was computed with free source orientation.
+            'src' : {instance of SourceSpaces}
+                Source space information.
 
     Notes
     -----
@@ -267,6 +335,8 @@ def make_lcmv(info, forward, data_cov, reg=0.05, noise_cov=None, label=None,
         if np.all(Gk == 0.):
             continue
         Ck = np.dot(Wk, Gk)
+
+        # XXX This should be de-duplicated with DICS
 
         # Compute scalar beamformer by finding the source orientation which
         # maximizes output source power
@@ -358,7 +428,8 @@ def make_lcmv(info, forward, data_cov, reg=0.05, noise_cov=None, label=None,
                    whitener=whitener, weight_norm=weight_norm,
                    pick_ori=pick_ori, ch_names=ch_names, proj=proj,
                    is_ssp=is_ssp, vertices=vertno, is_free_ori=is_free_ori,
-                   nsource=forward['nsource'], src=deepcopy(forward['src']))
+                   nsource=forward['nsource'], src=deepcopy(forward['src']),
+                   source_nn=forward['source_nn'].copy())
 
     return filters
 
@@ -410,11 +481,14 @@ def _apply_lcmv(data, filters, info, tmin, max_ori_out):
             M = np.dot(filters['whitener'], M)
 
         # project to source space using beamformer weights
+        vector = False
         if filters['is_free_ori']:
             sol = np.dot(W, M)
-            logger.info('combining the current components...')
-            sol = combine_xyz(sol)
-
+            if filters['pick_ori'] == 'vector':
+                vector = True
+            else:
+                logger.info('combining the current components...')
+                sol = combine_xyz(sol)
         else:
             # Linear inverse: do computation here or delayed
             if (M.shape[0] < W.shape[0] and
@@ -427,12 +501,14 @@ def _apply_lcmv(data, filters, info, tmin, max_ori_out):
 
         tstep = 1.0 / info['sfreq']
         yield _make_stc(sol, vertices=filters['vertices'], tmin=tmin,
-                        tstep=tstep, subject=subject)
+                        tstep=tstep, subject=subject, vector=vector,
+                        source_nn=filters['source_nn'])
 
     logger.info('[done]')
 
 
-def _prepare_beamformer_input(info, forward, label, picks, pick_ori):
+def _prepare_beamformer_input(info, forward, label, picks, pick_ori,
+                              fwd_norm=None):
     """Input preparation common for all beamformer functions.
 
     Check input values, prepare channel list and gain matrix. For documentation
@@ -440,10 +516,14 @@ def _prepare_beamformer_input(info, forward, label, picks, pick_ori):
     """
     is_free_ori = forward['source_ori'] == FIFF.FIFFV_MNE_FREE_ORI
 
-    if pick_ori in ['normal', 'max-power'] and not is_free_ori:
-        raise ValueError('Normal or max-power orientation can only be picked '
-                         'when a forward operator with free orientation is '
-                         'used.')
+    if pick_ori in ['normal', 'max-power', 'vector']:
+        if not is_free_ori:
+            raise ValueError(
+                'Normal or max-power orientation can only be picked '
+                'when a forward operator with free orientation is used.')
+    elif pick_ori is not None:
+        raise ValueError('pick_ori must be one of "normal", "max-power", '
+                         '"vector", or None, got %s' % (pick_ori,))
     if pick_ori == 'normal' and not forward['surf_ori']:
         # XXX eventually this could just call convert_forward_solution
         raise ValueError('Normal orientation can only be picked when a '
@@ -482,9 +562,28 @@ def _prepare_beamformer_input(info, forward, label, picks, pick_ori):
     if info['projs']:
         G = np.dot(proj, G)
 
-    # Pick after applying the projections
+    # Pick after applying the projections. This makes a copy of G, so further
+    # operations can be safely done in-place.
     G = G[picks_forward]
     proj = proj[np.ix_(picks_forward, picks_forward)]
+
+    # Normalize the leadfield if requested
+    if fwd_norm == 'dipole':  # each orientation separately
+        G /= np.linalg.norm(G, axis=0)
+    elif fwd_norm == 'vertex':  # all three orientations per loc jointly
+        depth_prior = np.sum(G ** 2, axis=0)
+        if is_free_ori:
+            depth_prior = depth_prior.reshape(-1, 3).sum(axis=1)
+        # Spherical leadfield can be zero at the center
+        depth_prior[depth_prior == 0.] = np.min(
+            depth_prior[depth_prior != 0.])
+        if is_free_ori:
+            depth_prior = np.repeat(depth_prior, 3)
+        source_weighting = np.sqrt(1. / depth_prior)
+        G *= source_weighting[np.newaxis, :]
+    elif fwd_norm is not None:
+        raise ValueError('Got invalid value for "fwd_norm". Valid '
+                         'values are: "dipole", "vertex" or None.')
 
     return is_free_ori, ch_names, proj, vertno, G
 
@@ -511,12 +610,12 @@ def apply_lcmv(evoked, filters, max_ori_out='signed', verbose=None):
 
     Returns
     -------
-    stc : SourceEstimate | VolSourceEstimate
+    stc : SourceEstimate | VolSourceEstimate | VectorSourceEstimate
         Source time courses.
 
     See Also
     --------
-    apply_lcmv_raw, apply_lcmv_epochs
+    make_lcmv, apply_lcmv_raw, apply_lcmv_epochs
     """
     _check_reference(evoked)
 
@@ -565,7 +664,7 @@ def apply_lcmv_epochs(epochs, filters, max_ori_out='signed',
 
     See Also
     --------
-    apply_lcmv_raw, apply_lcmv
+    make_lcmv, apply_lcmv_raw, apply_lcmv
     """
     _check_reference(epochs)
 
@@ -618,7 +717,7 @@ def apply_lcmv_raw(raw, filters, start=None, stop=None, max_ori_out='signed',
 
     See Also
     --------
-    apply_lcmv_epochs, apply_lcmv
+    make_lcmv, apply_lcmv_epochs, apply_lcmv
     """
     _check_reference(raw)
 
@@ -634,6 +733,7 @@ def apply_lcmv_raw(raw, filters, start=None, stop=None, max_ori_out='signed',
     return six.advance_iterator(stc)
 
 
+@deprecated((depr_message % "apply_lcmv"))
 @verbose
 def lcmv(evoked, forward, noise_cov=None, data_cov=None, reg=0.05, label=None,
          pick_ori=None, rank=None, weight_norm='unit-noise-gain',
@@ -729,6 +829,7 @@ def lcmv(evoked, forward, noise_cov=None, data_cov=None, reg=0.05, label=None,
     return stc
 
 
+@deprecated(depr_message % "apply_lcmv_epochs")
 @verbose
 def lcmv_epochs(epochs, forward, noise_cov, data_cov, reg=0.05, label=None,
                 pick_ori=None, return_generator=False, rank=None,
@@ -830,6 +931,7 @@ def lcmv_epochs(epochs, forward, noise_cov, data_cov, reg=0.05, label=None,
     return stcs
 
 
+@deprecated(depr_message % "apply_lcmv_raw")
 @verbose
 def lcmv_raw(raw, forward, noise_cov, data_cov, reg=0.05, label=None,
              start=None, stop=None, pick_ori=None, rank=None,
@@ -1104,8 +1206,8 @@ def tf_lcmv(epochs, forward, noise_covs, tmin, tmax, tstep, win_lengths,
     _check_reference(epochs)
 
     if pick_ori not in [None, 'normal']:
-        raise ValueError('Unrecognized orientation option in pick_ori, '
-                         'available choices are None and normal')
+        raise ValueError('pick_ori must be one of "normal" and None, '
+                         'got %s' % (pick_ori,))
     if noise_covs is not None and len(noise_covs) != len(freq_bins):
         raise ValueError('One noise covariance object expected per frequency '
                          'bin')

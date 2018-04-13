@@ -61,8 +61,8 @@ from .source_estimate import (read_source_estimate, MixedSourceEstimate,
                               save_stc_as_volume, extract_label_time_course)
 from .surface import (read_surface, write_surface, decimate_surface, read_tri,
                       read_morph_map, get_head_surf, get_meg_helmet_surf)
-from .source_space import (read_source_spaces, vertex_to_mni, 
-                           aseg_vertex_to_mni,
+from .source_space import (read_source_spaces, vertex_to_mni,
+                           head_to_mni,
                            write_source_spaces, setup_source_space,
                            setup_volume_source_space, SourceSpaces,
                            add_source_space_distances, morph_source_spaces,
@@ -74,7 +74,7 @@ from .epochs import (BaseEpochs, Epochs, EpochsArray, read_epochs,
 from .evoked import Evoked, EvokedArray, read_evokeds, write_evokeds, combine_evoked
 from .label import (read_label, label_sign_flip,
                     write_label, stc_to_label, grow_labels, Label, split_label,
-                    BiHemiLabel, read_labels_from_annot, write_labels_to_annot)
+                    BiHemiLabel, read_labels_from_annot, write_labels_to_annot, random_parcellation)
 from .misc import parse_config, read_reject_parameters
 from .coreg import (create_default_subject, scale_bem, scale_mri, scale_labels,
                     scale_source_space)

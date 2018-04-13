@@ -28,7 +28,8 @@ from .write import (start_file, end_file, start_block, end_block,
                     write_complex64, write_complex128, write_int,
                     write_id, write_string, _get_split_size)
 
-from ..annotations import _annotations_starts_stops, _write_annotations
+from ..annotations import (_annotations_starts_stops, _write_annotations,
+                           _handle_meas_date)
 from ..filter import (filter_data, notch_filter, resample, next_fast_len,
                       _resample_stim_channels, _filt_check_picks,
                       _filt_update_info)
@@ -676,12 +677,7 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
             if not isinstance(annotations, Annotations):
                 raise ValueError('Annotations must be an instance of '
                                  'mne.Annotations. Got %s.' % annotations)
-            meas_date = self.info['meas_date']
-            if meas_date is None:
-                meas_date = 0
-            elif not np.isscalar(meas_date):
-                if len(meas_date) > 1:
-                    meas_date = meas_date[0] + meas_date[1] / 1000000.
+            meas_date = _handle_meas_date(self.info['meas_date'])
             if annotations.orig_time is not None:
                 offset = (annotations.orig_time - meas_date -
                           self.first_samp / self.info['sfreq'])
@@ -694,10 +690,14 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                 if onset > self.times[-1]:
                     omitted += 1
                     omit_ind.append(ind)
+                    logger.debug('Omitting %d @ %s > %s'
+                                 % (ind, onset, self.times[-1]))
                 elif onset < self.times[0]:
                     if onset + annotations.duration[ind] < self.times[0]:
                         omitted += 1
                         omit_ind.append(ind)
+                        logger.debug('Omitting %d @ %s < %s'
+                                     % (ind, onset, self.times[0]))
                     else:
                         limited += 1
                         duration = annotations.duration[ind] + onset
@@ -766,6 +766,10 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                 if start < 0:
                     raise ValueError('start must be >= -%s' % nchan)
             stop = item[0].stop if item[0].stop is not None else nchan
+            if stop < 0:
+                stop += nchan
+                if stop < 0:
+                    raise ValueError('stop must be >= -%s' % nchan)
             step = item[0].step if item[0].step is not None else 1
             sel = list(range(start, stop, step))
         else:
@@ -1236,8 +1240,10 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
 
         Notes
         -----
-        For more information, see the tutorials :ref:`tut_background_filtering`
-        and :ref:`tut_artifacts_filter`.
+        For more information, see the tutorials
+        :ref:`sphx_glr_auto_tutorials_plot_background_filtering.py`
+        and
+        :ref:`sphx_glr_auto_tutorials_plot_artifacts_correction_filtering.py`.
         """
         _check_preload(self, 'raw.filter')
         update_info, picks = _filt_check_picks(self.info, picks,
@@ -1404,7 +1410,7 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                      but instead epoch and then downsample, as epoching
                      downsampled data jitters triggers.
                      For more, see
-                     `this illustrative gist <https://gist.github.com/Eric89GXL/01642cb3789992fbca59>`_.
+                     `this illustrative gist <https://gist.github.com/larsoner/01642cb3789992fbca59>`_.
 
                      If resampling the continuous data is desired, it is
                      recommended to construct events using the original data.
@@ -1550,6 +1556,9 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
         functions (e.g., time_as_index, or Epochs). New first_samp and
         last_samp are set accordingly.
 
+        Thus function operates in-place on the instance.
+        Use :meth:`mne.io.Raw.copy` if operation on a copy is desired.
+
         Parameters
         ----------
         tmin : float
@@ -1560,7 +1569,7 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
         Returns
         -------
         raw : instance of Raw
-            The cropped raw object.
+            The cropped raw object, modified in-place.
         """
         max_time = (self.n_times - 1) / self.info['sfreq']
         if tmax is None:
@@ -1598,7 +1607,9 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
 
         if self.annotations is not None:
             annotations = self.annotations
-            annotations.onset -= tmin
+            # XXX there might be a cleaner way to do this someday
+            if self.annotations.orig_time is None:
+                self.annotations.onset -= tmin
             BaseRaw.annotations.fset(self, annotations, emit_warning=False)
 
         return self
@@ -1649,6 +1660,8 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
         overwrite : bool
             If True, the destination file (if it exists) will be overwritten.
             If False (default), an error will be raised if the file exists.
+            To overwrite original file (the same one that was loaded),
+            data must be preloaded upon reading.
         split_size : string | int
             Large raw files are automatically split into multiple pieces. This
             parameter specifies the maximum size of each piece. If the
@@ -1742,12 +1755,13 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
              show_options=False, title=None, show=True, block=False,
              highpass=None, lowpass=None, filtorder=4, clipping=None,
              show_first_samp=False, proj=True, group_by='type',
-             butterfly=False, decim='auto'):
+             butterfly=False, decim='auto', noise_cov=None, event_id=None):
         return plot_raw(self, events, duration, start, n_channels, bgcolor,
                         color, bad_color, event_color, scalings, remove_dc,
                         order, show_options, title, show, block, highpass,
                         lowpass, filtorder, clipping, show_first_samp, proj,
-                        group_by, butterfly, decim)
+                        group_by, butterfly, decim, noise_cov=noise_cov,
+                        event_id=event_id)
 
     @verbose
     @copy_function_doc_to_method_doc(plot_raw_psd)
@@ -2003,18 +2017,17 @@ class BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
         annotations = self.annotations
         edge_samps = list()
         for ri, r in enumerate(raws):
-            annotations = _combine_annotations((annotations, r.annotations),
-                                               self._last_samps,
-                                               self._first_samps,
-                                               self.info['sfreq'],
-                                               self.info['meas_date'])
+            n_samples = self.last_samp - self.first_samp + 1
+            annotations = _combine_annotations(
+                annotations, r.annotations, n_samples,
+                self.first_samp, r.first_samp,
+                self.info['sfreq'], self.info['meas_date'])
             edge_samps.append(sum(self._last_samps) -
                               sum(self._first_samps) + (ri + 1))
             self._first_samps = np.r_[self._first_samps, r._first_samps]
             self._last_samps = np.r_[self._last_samps, r._last_samps]
             self._raw_extras += r._raw_extras
             self._filenames += r._filenames
-
         self._update_times()
         if annotations is None:
             annotations = Annotations([], [], [])
@@ -2336,7 +2349,7 @@ def _start_writing_raw(name, info, sel=None, data_type=FIFF.FIFFT_FLOAT,
     #
     # Annotations
     #
-    if annotations is not None and len(annotations.onset) > 0:
+    if annotations is not None:  # allow saving empty annotations
         _write_annotations(fid, annotations)
 
     #
@@ -2447,7 +2460,8 @@ def _check_raw_compatibility(raw):
         raw[0].orig_format = 'unknown'
 
 
-def concatenate_raws(raws, preload=None, events_list=None):
+@verbose
+def concatenate_raws(raws, preload=None, events_list=None, verbose=None):
     """Concatenate raw instances as if they were continuous.
 
     .. note:: ``raws[0]`` is modified in-place to achieve the concatenation.
@@ -2466,6 +2480,9 @@ def concatenate_raws(raws, preload=None, events_list=None):
         have or not have data preloaded.
     events_list : None | list
         The events to concatenate. Defaults to None.
+    verbose : bool, str, int, or None
+        If not None, override default verbose level (see :func:`mne.verbose`
+        and :ref:`Logging documentation <tut_logging>` for more).
 
     Returns
     -------
@@ -2488,7 +2505,8 @@ def concatenate_raws(raws, preload=None, events_list=None):
         return raws[0], events
 
 
-def _check_update_montage(info, montage, path=None, update_ch_names=False):
+def _check_update_montage(info, montage, path=None, update_ch_names=False,
+                          raise_missing=True):
     """Help eeg readers to add montage."""
     if montage is not None:
         if not isinstance(montage, (string_types, Montage)):
@@ -2505,11 +2523,11 @@ def _check_update_montage(info, montage, path=None, update_ch_names=False):
                        FIFF.FIFFV_STIM_CH)
             for ch in info['chs']:
                 if not ch['kind'] in exclude:
-                    if np.unique(ch['loc']).size == 1:
+                    if not np.isfinite(ch['loc'][:3]).all():
                         missing_positions.append(ch['ch_name'])
 
             # raise error if positions are missing
-            if missing_positions:
+            if missing_positions and raise_missing:
                 raise KeyError(
                     "The following positions are missing from the montage "
                     "definitions: %s. If those channels lack positions "

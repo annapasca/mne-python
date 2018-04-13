@@ -33,7 +33,8 @@ from .utils import (get_subjects_dir, run_subprocess, has_freesurfer,
 from .parallel import parallel_func, check_n_jobs
 from .transforms import (invert_transform, apply_trans, _print_coord_trans,
                          combine_transforms, _get_trans,
-                         _coord_frame_name, Transform, _str_to_frame)
+                         _coord_frame_name, Transform, _str_to_frame,
+                         _ensure_trans)
 from .externals.six import string_types
 
 
@@ -41,9 +42,9 @@ def _get_lut():
     """Get the FreeSurfer LUT."""
     data_dir = op.join(op.dirname(__file__), 'data')
     lut_fname = op.join(data_dir, 'FreeSurferColorLUT.txt')
-    return np.genfromtxt(lut_fname, dtype=None,
-                         usecols=(0, 1, 2, 3, 4, 5),
-                         names=['id', 'name', 'R', 'G', 'B', 'A'])
+    dtype = [('id', '<i8'), ('name', 'U47'),
+             ('R', '<i8'), ('G', '<i8'), ('B', '<i8'), ('A', '<i8')]
+    return np.genfromtxt(lut_fname, dtype=dtype)
 
 
 def _get_lut_id(lut, label, use_lut):
@@ -51,7 +52,7 @@ def _get_lut_id(lut, label, use_lut):
     if not use_lut:
         return 1
     assert isinstance(label, string_types)
-    mask = (lut['name'] == label.encode('utf-8'))
+    mask = (lut['name'] == label)
     assert mask.sum() == 1
     return lut['id'][mask]
 
@@ -1227,6 +1228,49 @@ def aseg_vertex_to_mni(vertices, subject, subjects_dir=None, mode=None,
     return apply_trans(xfm['trans'], vertices), xfm
 
 
+##############################################################################
+# Volume to MNI conversion
+
+@verbose
+def head_to_mni(pos, subject, mri_head_t, subjects_dir=None,
+                verbose=None):
+    """Convert pos from head coordinate system to MNI ones.
+
+    Parameters
+    ----------
+    pos : array, shape (n_pos, 3)
+        The  coordinates (in m) in head coordinate system
+    subject : string
+        Name of the subject.
+    mri_head_t: instance of Transform
+        MRI<->Head coordinate transformation
+    subjects_dir : string, or None
+        Path to SUBJECTS_DIR if it is not set in the environment.
+    verbose : bool, str, int, or None
+        If not None, override default verbose level (see :func:`mne.verbose`
+        and :ref:`Logging documentation <tut_logging>` for more).
+
+    Returns
+    -------
+    coordinates : array, shape (n_pos, 3)
+        The MNI coordinates (in mm) of pos
+
+    Notes
+    -----
+    This function requires either nibabel (in Python) or Freesurfer
+    (with utility "mri_info") to be correctly installed.
+    """
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
+
+    # before we go from head to MRI (surface RAS)
+    head_mri_t = _ensure_trans(mri_head_t, 'head', 'mri')
+    coo_MRI_RAS = apply_trans(head_mri_t, pos)
+
+    # convert to MNI coordinates
+    xfm = _read_talxfm(subject, subjects_dir)
+    return apply_trans(xfm['trans'], coo_MRI_RAS * 1000)
+
+
 @verbose
 def _read_talxfm(subject, subjects_dir, mode=None, verbose=None):
     """Read MNI transform from FreeSurfer talairach.xfm file.
@@ -1405,7 +1449,7 @@ def setup_source_space(subject, spacing='oct6', surface='white',
 
     Returns
     -------
-    src : list
+    src : SourceSpaces
         The source space for each hemisphere.
 
     See Also
@@ -1533,10 +1577,10 @@ def setup_volume_source_space(subject=None, pos=5.0, mri=None,
 
     Returns
     -------
-    src : list
-        The source space. Note that this list will have length 1 for
-        compatibility reasons, as most functions expect source spaces
-        to be provided as lists).
+    src : SourceSpaces
+        A :class:`SourceSpaces` object containing one source space for each
+        entry of ``volume_labels``, or a single source space if
+        ``volume_labels`` was not specified.
 
     See Also
     --------
@@ -1573,7 +1617,7 @@ def setup_volume_source_space(subject=None, pos=5.0, mri=None,
             raise RuntimeError('"mri" must be provided if "volume_label" is '
                                'not None')
         if not isinstance(volume_label, list):
-                volume_label = [volume_label]
+            volume_label = [volume_label]
 
         # Check that volume label is found in .mgz file
         volume_labels = get_volume_labels_from_aseg(mri)
@@ -1947,7 +1991,7 @@ def _make_volume_source_space(surf, grid, exclude, mindist, mri=None,
         # Filter out points too far from volume region voxels
         dists = _compute_nearest(rr_voi, sp['rr'], return_dists=True)[1]
         # Maximum distance from center of mass of a voxel to any of its corners
-        maxdist = np.linalg.norm(trans[:3, :3].sum(0) / 2.)
+        maxdist = linalg.norm(trans[:3, :3].sum(0) / 2.)
         bads = np.where(dists > maxdist)[0]
 
         # Update source info
@@ -2469,7 +2513,7 @@ def get_volume_labels_from_aseg(mgz_fname, return_colors=False):
     # Get the unique label names
     lut = _get_lut()
 
-    label_names = [lut[lut['id'] == ii]['name'][0].decode('utf-8')
+    label_names = [lut[lut['id'] == ii]['name'][0]
                    for ii in np.unique(mgz_data)]
     label_colors = [[lut[lut['id'] == ii]['R'][0],
                      lut[lut['id'] == ii]['G'][0],
