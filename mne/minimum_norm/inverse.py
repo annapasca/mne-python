@@ -1082,12 +1082,15 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
     K, noise_norm, vertno, source_nn = _assemble_kernel(inv, label, method,
                                                         pick_ori)
 
+    print('******************** K dim {} max {} *********************** \n'
+          .format(K.shape, np.max(K)))
+
     is_free_ori = (inverse_operator['source_ori'] ==
                    FIFF.FIFFV_MNE_FREE_ORI and pick_ori != 'normal')
 
     is_mixed = (inverse_operator['source_ori'] == 5 and pick_ori is None)
 
-    if buffer_size is not None and is_free_ori:
+    if buffer_size is not None and (is_free_ori or is_mixed):
         # Process the data in segments to conserve memory
         n_seg = int(np.ceil(data.shape[1] / float(buffer_size)))
         logger.info('    computing inverse and combining the current '
@@ -1096,12 +1099,13 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
         # Allocate space for inverse solution
         n_times = data.shape[1]
 
-        n_dipoles = K.shape[0] if pick_ori == 'vector' else K.shape[0] // 3
+        n_dipoles = K.shape[0] if (pick_ori == 'vector' or is_mixed) \
+            else K.shape[0] // 3
         sol = np.empty((n_dipoles, n_times), dtype=np.result_type(K, data))
 
         for pos in range(0, n_times, buffer_size):
             sol_chunk = np.dot(K, data[:, pos:pos + buffer_size])
-            if pick_ori != 'vector':
+            if pick_ori != 'vector' and not is_mixed:
                 sol_chunk = combine_xyz(sol_chunk)
             sol[:, pos:pos + buffer_size] = sol_chunk
 
@@ -1173,46 +1177,56 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
     subject = _subject_from_inverse(inverse_operator)
     for k, e in enumerate(epochs):
         logger.info('Processing epoch : %d' % (k + 1))
-        if is_free_ori:
+        if is_free_ori or is_mixed:
             # Compute solution and combine current components (non-linear)
             sol = np.dot(K, e[sel])  # apply imaging kernel
 
             logger.info('combining the current components...')
-            if pick_ori != 'vector':
+            if pick_ori != 'vector' and not is_mixed:
                 sol = combine_xyz(sol)
 
             if noise_norm is not None:
                 sol *= noise_norm
 
-        elif is_mixed:
+#        elif is_mixed:
+#            print('******************** K dim {}  *********************** \n'
+#                  .format(K.shape))
 
-            print('************* K dim {}  ************* \n'.format(K.shape))
-
-            inv_src = inverse_operator['src']
-
-            vertno = [s['vertno'] for s in inv_src]
-            nvert = [len(vn) for vn in vertno]
-
-            n_source_cortex = np.sum(nvert[:2])
-#            n_source_aseg = np.sum(nvert[2:])  # useless
-            
-            sol_cortex = np.dot(K[:n_source_cortex,:], e[sel])
-#            sol_cortex = np.abs(sol_cortex)  # NO abs
-            print('******************** sol_cortex dim {}  *********************** \n'.format(sol_cortex.shape))
-            
-            sol_aseg = np.dot(K[n_source_cortex:,:], e[sel])             
-            print('******************** sol_aseg dim {}  *********************** \n'.format(sol_aseg.shape))
-#            sol_aseg_norm = combine_xyz(sol_aseg)
-            
-#            sol2save = np.concatenate((sol_cortex, sol_aseg), axis=0)
-            sol = np.concatenate((sol_cortex, sol_aseg), axis=0)
-#            print('******************** sol2save dim {}  *********************** \n'.format(sol.shape))
-#            sol_file = os.path.abspath('sol_' + str(k) + '.npy')
+#            inv_src = inverse_operator['src']
+#
+#            vertno = [s['vertno'] for s in inv_src]
+#            nvert = [len(vn) for vn in vertno]
+#
+#            n_source_cortex = np.sum(nvert[:2])
+##            n_source_aseg = np.sum(nvert[2:])  # useless
+#
+#            sol_cortex = np.dot(K[:n_source_cortex, :], e[sel])
+##            sol_cortex = np.abs(sol_cortex)  # NO abs
+#            print('******************** sol_cortex dim {}  **************** \n'
+#                  .format(sol_cortex.shape))
+#
+#            sol_aseg = np.dot(K[n_source_cortex:, :], e[sel])
+#            print('******************** sol_aseg dim {}  *******************\n'
+#                  .format(sol_aseg.shape))
+##            sol_aseg_norm = combine_xyz(sol_aseg)
+#
+##            sol2save = np.concatenate((sol_cortex, sol_aseg), axis=0)
+#            sol = np.concatenate((sol_cortex, sol_aseg), axis=0)
+##            print('******************** sol2save dim {}  ***************** \n'
+##                  .format(sol.shape))
+##            sol_file = os.path.abspath('sol_' + str(k) + '.npy')
 #            np.save(sol_file, sol)
             
 #            sol = np.concatenate((sol_cortex, sol_aseg_norm), axis=0)
-            print('******************** sol dim {}  *********************** \n'.format(sol.shape))
             
+#            sol = np.dot(K, e[sel])
+#            print('******************** sol dim {}  *********************** \n'
+#                  .format(sol.shape))
+#            
+#            # TODO do we have to add noise normalization as in free_ori?
+#            if noise_norm is not None:
+#                sol *= noise_norm
+
         else:
             # Linear inverse: do computation here or delayed
             if len(sel) < K.shape[1]:
@@ -1493,6 +1507,10 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
                              'got %s' % (fixed,))
         fixed = True
 
+    if is_mixed:
+        depth = None
+        loose = 1
+
     if fixed and not is_fixed_ori:
         # Here we use loose=1. because computation of depth priors is improved
         # by operating on the free orientation forward; see code at the
@@ -1546,6 +1564,8 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
     gain_info, gain, noise_cov, whitener, n_nzero = \
         _prepare_forward(forward, info, noise_cov, pca=False, rank=rank)
     forward['info']._check_consistency()
+    
+    
 
     #
     # 5. Compose the depth-weighting matrix
@@ -1609,6 +1629,14 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
     # 9. Apply whitening to the forward computation matrix
     #
     logger.info('Whitening the forward solution.')
+    print('*********************************************')
+    print(gain.shape)
+    from scipy.io import savemat
+    savemat('/media/pasca/paska/meg_data/monaci/monk0001/samatha/TEST.mat',
+            {'LF': forward['sol']['data'],
+             'gain': gain, 'noise_cov': noise_cov, 'whitener': whitener,
+             'n_nzero': n_nzero})
+    print('*********************************************')
     gain = np.dot(whitener, gain)
 
     # 10. Exclude the source space points within the labels (not done)
