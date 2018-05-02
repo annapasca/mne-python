@@ -1498,14 +1498,14 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
     # 9. Apply whitening to the forward computation matrix
     #
     logger.info('Whitening the forward solution.')
-    print('*********************************************')
-    print(gain.shape)
-    from scipy.io import savemat
-    savemat('/media/pasca/paska/meg_data/monaci/monk0001/samatha/TEST.mat',
-            {'LF': forward['sol']['data'],
-             'gain': gain, 'noise_cov': noise_cov, 'whitener': whitener,
-             'n_nzero': n_nzero})
-    print('*********************************************')
+#    print('*********************************************')
+#    print(gain.shape)
+#    from scipy.io import savemat
+#    savemat('/media/pasca/paska/meg_data/monaci/monk0001/samatha/TEST.mat',
+#            {'LF': forward['sol']['data'],
+#             'gain': gain, 'noise_cov': noise_cov, 'whitener': whitener,
+#             'n_nzero': n_nzero})
+#    print('*********************************************')
     gain = np.dot(whitener, gain)
 
     # 10. Exclude the source space points within the labels (not done)
