@@ -1531,10 +1531,6 @@ def make_inverse_operator(info, forward, noise_cov, loose='auto', depth=0.8,
             raise ValueError('For a fixed orientation inverse solution '
                              'is_mixed has to be False')
 
-    if is_mixed:
-        depth = None
-        loose = None
-
     # depth=None can use fixed fwd, depth=0<x<1 must use free ori
     if depth is not None:
         if not (0 < depth <= 1):
